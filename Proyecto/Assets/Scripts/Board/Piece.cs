@@ -4,144 +4,164 @@ using UnityEngine;
 
 namespace ReinosDelEter
 {
-    /// <summary>
-    /// One of the 3 pieces each player controls.
-    /// Handles smooth hop-to-tile movement and idle bob.
-    ///
-    /// Unity 6: no deprecated API used.
-    /// </summary>
     public class Piece : MonoBehaviour
     {
         [Header("Identity")]
-        public int playerIndex;   // 0-3
-        public int pieceIndex;    // 0-2
+        public int playerIndex;
+        public int pieceIndex;
         public ElementType element;
 
         [Header("Movement")]
         public float moveSpeed = 4f;
-        public float hopHeight = 0.5f;
+        public float hopHeight = 0.6f;
 
-        [Header("State (read-only)")]
+        [Header("State")]
         public Tile currentTile;
         public bool isMoving { get; private set; }
 
         // Callbacks
         public System.Action<Tile> OnArrivedAtTile;
         public System.Action<Tile> OnMovementFinished;
+        public System.Action<Tile, int> OnReachedJunction;
 
-        // Idle bob
+        // La tile de donde vino la ficha cuando llegó al cruce
+        public Tile _prevTileAtJunction { get; private set; }
+
+        // Visuals
+        private Renderer _rend;
+        private bool _glowing;
+        private Coroutine _glowRoutine;
         private Vector3 _baseLocalPos;
         private float _bobTimer;
-        private const float BobSpeed = 2.2f;
-        private const float BobAmount = 0.05f;
+        private const float BobSpeed = 2.0f;
+        private const float BobAmount = 0.04f;
 
-        // ── Lifecycle ────────────────────────────────────────────────────────
+        private void Awake() => _rend = GetComponent<Renderer>();
         private void Start() => _baseLocalPos = transform.localPosition;
-
-        private void Update()
-        {
-            if (!isMoving) IdleBob();
-        }
+        private void Update() { if (!isMoving) IdleBob(); }
 
         // ── Public API ───────────────────────────────────────────────────────
-        /// <summary>Teleport piece to tile without animation.</summary>
+
         public void PlaceOnTile(Tile tile)
         {
-            if (tile == null) { Debug.LogError($"[Piece] PlaceOnTile: tile es null para {name}"); return; }
+            if (tile == null) { Debug.LogError($"[Piece] PlaceOnTile null — {name}"); return; }
             currentTile = tile;
-            transform.position = tile.transform.position + Vector3.up * 1.2f;
+            transform.position = tile.transform.position + Vector3.up * 1.0f;
             _baseLocalPos = transform.localPosition;
         }
 
-        /// <summary>Move piece forward N steps, usando la dirección elegida.</summary>
-        public void MoveSteps(int steps)
+        /// <summary>
+        /// Retorna los vecinos disponibles desde la tile actual.
+        /// Excluye la tile de donde vino para evitar rebotes automáticos.
+        /// </summary>
+        public List<Tile> GetNeighbors(Tile cameFrom = null)
         {
-            if (isMoving || currentTile == null) return;
-            StartCoroutine(MoveCoroutine(steps));
-        }
-
-        /// <summary>Mueve la ficha con una dirección inicial elegida por el jugador.</summary>
-        public void MoveStepsWithDirection(int steps, Tile firstStep)
-        {
-            if (isMoving || currentTile == null) return;
-            StartCoroutine(MoveCoroutineWithFirstStep(steps, firstStep));
-        }
-
-        /// <summary>Retorna todas las tiles a las que puede ir desde la posición actual.</summary>
-        public List<Tile> GetAvailableDirections()
-        {
-            List<Tile> options = new List<Tile>();
-            if (currentTile == null) return options;
-
-            // Si tiene connectedTiles (esquina), esas son las opciones
-            if (currentTile.connectedTiles != null && currentTile.connectedTiles.Length > 0)
+            var result = new List<Tile>();
+            if (currentTile == null) return result;
+            foreach (Tile nb in currentTile.neighbors)
             {
-                foreach (Tile t in currentTile.connectedTiles)
-                    if (t != null) options.Add(t);
-                return options;
+                if (nb == null) continue;
+                if (nb == cameFrom && currentTile.neighbors.Count > 1) continue; // evita retroceso si hay otras opciones
+                result.Add(nb);
             }
-
-            // Si no, solo nextTile
-            if (currentTile.nextTile != null)
-                options.Add(currentTile.nextTile);
-
-            return options;
+            return result;
         }
+
+        /// <summary>Inicia movimiento hacia firstStep con N pasos.</summary>
+        public void StartMovement(Tile firstStep, int steps)
+        {
+            if (isMoving) return;
+            StartCoroutine(MoveStep(firstStep, steps, currentTile));
+        }
+
+        /// <summary>Continúa movimiento (después de un cruce) sin chequear isMoving.</summary>
+        public void ContinueMovement(Tile nextStep, int steps)
+        {
+            StopAllCoroutines();
+            isMoving = false;
+            stopMovement = false;
+            // currentTile es el cruce actual — pasarlo como cameFrom
+            // para que el primer paso no vuelva al cruce
+            StartCoroutine(MoveStep(nextStep, steps, currentTile));
+        }
+
+        // Flag que GameManager activa para detener movimiento inmediatamente
+        public bool stopMovement { get; set; } = false;
 
         // ── Movement ─────────────────────────────────────────────────────────
-        private IEnumerator MoveCoroutine(int steps)
+
+        private IEnumerator MoveStep(Tile target, int stepsLeft, Tile cameFrom)
         {
             isMoving = true;
-            for (int s = 0; s < steps; s++)
-            {
-                Tile next = currentTile?.nextTile;
-                if (next == null) break;
-                yield return StartCoroutine(HopTo(next));
-                currentTile = next;
-                OnArrivedAtTile?.Invoke(currentTile);
-                yield return new WaitForSeconds(0.08f);
-            }
+            stopMovement = false;
+            SetSelected(false);
+
+            yield return StartCoroutine(HopTo(target));
+
+            Tile prevTile = currentTile;
+            currentTile = target;
+
+            OnArrivedAtTile?.Invoke(currentTile);
+
+            if (stopMovement) { isMoving = false; yield break; }
+
+            yield return new WaitForSeconds(0.07f);
+            stepsLeft--;
             isMoving = false;
-            OnMovementFinished?.Invoke(currentTile);
+
+            if (stepsLeft <= 0) { OnMovementFinished?.Invoke(currentTile); yield break; }
+
+            var forward = GetNeighborsExcluding(currentTile, prevTile);
+
+            Debug.Log($"[MOVE] {name} | tile={currentTile.name} | prev={prevTile?.name} | neighbors={currentTile.neighbors.Count} | forward={forward.Count} | steps={stepsLeft}");
+            foreach (var f in forward) Debug.Log($"  -> {f.name}");
+
+            // Nunca avanzar automáticamente al castillo propio
+            forward.RemoveAll(t => t != null
+                && t.tileType == TileType.Start
+                && t.pathIndex == playerIndex);
+
+            // Desde el centro siempre pide dirección
+            bool forceJunction = currentTile.tileType == TileType.Center;
+
+            if (forward.Count == 0)
+                OnMovementFinished?.Invoke(currentTile);
+            else if (forward.Count == 1 && !forceJunction)
+                StartCoroutine(MoveStep(forward[0], stepsLeft, currentTile));
+            else
+            {
+                _prevTileAtJunction = prevTile;
+                OnReachedJunction?.Invoke(currentTile, stepsLeft);
+            }
         }
 
-        private IEnumerator MoveCoroutineWithFirstStep(int steps, Tile firstStep)
+        private List<Tile> GetNeighborsExcluding(Tile from, Tile exclude)
         {
-            isMoving = true;
+            var result = new List<Tile>();
+            if (from == null) return result;
 
-            // Primer paso: dirección elegida
-            yield return StartCoroutine(HopTo(firstStep));
-            currentTile = firstStep;
-            OnArrivedAtTile?.Invoke(currentTile);
-            yield return new WaitForSeconds(0.08f);
+            // Si solo hay 1 vecino total, no excluimos nada (para no quedarnos sin salida)
+            bool hasMultiple = from.neighbors.Count > 1;
 
-            // Pasos restantes: sigue nextTile normalmente
-            for (int s = 1; s < steps; s++)
+            foreach (Tile nb in from.neighbors)
             {
-                Tile next = currentTile?.nextTile;
-                if (next == null) break;
-                yield return StartCoroutine(HopTo(next));
-                currentTile = next;
-                OnArrivedAtTile?.Invoke(currentTile);
-                yield return new WaitForSeconds(0.08f);
+                if (nb == null) continue;
+                if (hasMultiple && nb == exclude) continue; // excluye solo si hay más opciones
+                result.Add(nb);
             }
-
-            isMoving = false;
-            OnMovementFinished?.Invoke(currentTile);
+            return result;
         }
 
         private IEnumerator HopTo(Tile target)
         {
             Vector3 start = transform.position;
-            Vector3 end = target.transform.position + Vector3.up * 0.5f;
-            float dist = Vector3.Distance(start, end);
-            float duration = dist / moveSpeed;
+            Vector3 end = target.transform.position + Vector3.up * 1.0f;
+            float duration = Mathf.Max(0.15f, Vector3.Distance(start, end) / moveSpeed);
             float elapsed = 0f;
 
-            // Face movement direction
             Vector3 dir = (end - start).normalized;
             if (dir.sqrMagnitude > 0.001f)
-                transform.rotation = Quaternion.LookRotation(dir);
+                transform.rotation = Quaternion.LookRotation(new Vector3(dir.x, 0, dir.z));
 
             while (elapsed < duration)
             {
@@ -158,10 +178,37 @@ namespace ReinosDelEter
         }
 
         // ── Visuals ──────────────────────────────────────────────────────────
+
+        public void SetSelected(bool on)
+        {
+            if (_glowRoutine != null) StopCoroutine(_glowRoutine);
+            _glowing = on;
+            if (on) _glowRoutine = StartCoroutine(GlowPulse());
+            else ApplyEmission(Color.black);
+        }
+
+        private IEnumerator GlowPulse()
+        {
+            while (_glowing)
+            {
+                float b = 0.6f + Mathf.Sin(Time.time * 4f) * 0.4f;
+                ApplyEmission(Color.white * b * 2f);
+                yield return null;
+            }
+        }
+
+        private void ApplyEmission(Color c)
+        {
+            if (_rend == null) return;
+            _rend.material.EnableKeyword("_EMISSION");
+            _rend.material.SetColor("_EmissionColor", c);
+        }
+
         private void IdleBob()
         {
             _bobTimer += Time.deltaTime * BobSpeed;
-            transform.localPosition = _baseLocalPos + Vector3.up * (Mathf.Sin(_bobTimer) * BobAmount);
+            transform.localPosition = _baseLocalPos +
+                Vector3.up * (Mathf.Sin(_bobTimer) * BobAmount);
         }
 
         public void PlaySelectAnimation() => StartCoroutine(ScalePop());
@@ -169,18 +216,11 @@ namespace ReinosDelEter
         private IEnumerator ScalePop()
         {
             Vector3 orig = transform.localScale;
-            Vector3 big = orig * 1.35f;
-
-            for (float t = 0; t < 0.15f; t += Time.deltaTime)
-            {
-                transform.localScale = Vector3.Lerp(orig, big, t / 0.15f);
-                yield return null;
-            }
-            for (float t = 0; t < 0.15f; t += Time.deltaTime)
-            {
-                transform.localScale = Vector3.Lerp(big, orig, t / 0.15f);
-                yield return null;
-            }
+            Vector3 big = orig * 1.4f;
+            for (float t = 0; t < 0.12f; t += Time.deltaTime)
+            { transform.localScale = Vector3.Lerp(orig, big, t / 0.12f); yield return null; }
+            for (float t = 0; t < 0.12f; t += Time.deltaTime)
+            { transform.localScale = Vector3.Lerp(big, orig, t / 0.12f); yield return null; }
             transform.localScale = orig;
         }
     }

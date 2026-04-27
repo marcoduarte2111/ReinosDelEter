@@ -1,4 +1,5 @@
-﻿using UnityEngine;
+﻿using System.Collections.Generic;
+using UnityEngine;
 
 namespace ReinosDelEter
 {
@@ -7,66 +8,80 @@ namespace ReinosDelEter
 
     public class Tile : MonoBehaviour
     {
-        [Header("Tile Identity")]
+        [Header("Identity")]
         public int tileIndex;
         public ElementType element;
         public TileType tileType;
-
-        [Header("Board Position")]
         public int pathIndex;
         public int positionOnPath;
 
-        [Header("Navigation")]
-        public Tile nextTile;
-        public Tile previousTile;
-        public Tile[] connectedTiles;
+        [Header("Graph — vecinos directos")]
+        public List<Tile> neighbors = new();
+
+        [Header("Conquest")]
+        public int ownedByPlayer = -1;
+        public bool IsCastle => tileType == TileType.Start;
+        public bool IsConquered => IsCastle && ownedByPlayer >= 0;
 
         [Header("Visuals")]
         public Renderer tileRenderer;
 
+        // Kept for legacy compatibility — not used for navigation anymore
+        public Tile nextTile { get; set; }
+        public Tile previousTile { get; set; }
+        public Tile[] connectedTiles { get; set; }
+
         public static readonly Color[] ElementColors =
         {
-            new Color(0.2f,  0.5f,  1.0f),    // Water  — blue
-            new Color(1.0f,  0.25f, 0.05f),   // Fire   — orange-red
-            new Color(0.15f, 0.65f, 0.15f),   // Earth  — green
-            new Color(0.85f, 0.85f, 0.92f),   // Air    — pearl white
-            new Color(0.5f,  0.2f,  0.9f)     // Center — purple
+            new Color(0.2f,  0.5f,  1.0f),
+            new Color(1.0f,  0.25f, 0.05f),
+            new Color(0.15f, 0.65f, 0.15f),
+            new Color(0.85f, 0.85f, 0.92f),
+            new Color(0.5f,  0.2f,  0.9f)
         };
+
+        private Material _mat;
 
         private void Awake()
         {
             tileRenderer = GetComponent<Renderer>();
         }
 
+        public void AddNeighbor(Tile t)
+        {
+            if (t != null && !neighbors.Contains(t))
+                neighbors.Add(t);
+        }
+
         public void ApplyElementVisuals()
         {
-            if (tileRenderer == null)
-                tileRenderer = GetComponent<Renderer>();
+            if (tileRenderer == null) tileRenderer = GetComponent<Renderer>();
             if (tileRenderer == null) return;
-
             Color col = ElementColors[(int)element];
-
-            // Usa el shader del material existente en lugar de buscarlo por nombre
-            Material mat = new Material(tileRenderer.sharedMaterial != null
-                ? tileRenderer.sharedMaterial
-                : tileRenderer.material);
-
-            mat.color = col;
-            if (mat.HasProperty("_EmissionColor"))
-            {
-                mat.EnableKeyword("_EMISSION");
-                mat.SetColor("_EmissionColor", col * 0.3f);
-            }
-            tileRenderer.material = mat;
+            _mat = new Material(tileRenderer.sharedMaterial != null
+                   ? tileRenderer.sharedMaterial : tileRenderer.material);
+            _mat.color = col;
+            _mat.EnableKeyword("_EMISSION");
+            _mat.SetColor("_EmissionColor", col * 0.3f);
+            tileRenderer.material = _mat;
         }
 
         public void SetHighlight(bool active)
         {
             if (tileRenderer == null) return;
-            Color col = ElementColors[(int)element];
-            Material mat = tileRenderer.material;
-            mat.EnableKeyword("_EMISSION");
-            mat.SetColor("_EmissionColor", active ? Color.yellow * 0.8f : col * 0.3f);
+            if (_mat == null) _mat = tileRenderer.material;
+            _mat.EnableKeyword("_EMISSION");
+            if (active)
+            {
+                _mat.color = Color.yellow;
+                _mat.SetColor("_EmissionColor", Color.yellow * 2f);
+            }
+            else
+            {
+                Color col = ElementColors[(int)element];
+                _mat.color = col;
+                _mat.SetColor("_EmissionColor", col * 0.3f);
+            }
         }
 
         public void PlayLandEffect() => StartCoroutine(LandPulse());
@@ -74,19 +89,35 @@ namespace ReinosDelEter
         private System.Collections.IEnumerator LandPulse()
         {
             if (tileRenderer == null) yield break;
+            if (_mat == null) _mat = tileRenderer.material;
             Color col = ElementColors[(int)element];
-            Material mat = tileRenderer.material;
             Color baseEmit = col * 0.3f;
-            Color peak = Color.white * 1.2f;
-            mat.EnableKeyword("_EMISSION");
-
+            Color peak = Color.white * 1.5f;
+            _mat.EnableKeyword("_EMISSION");
             for (float t = 0f; t < 0.3f; t += Time.deltaTime)
             {
                 float n = t < 0.15f ? t / 0.15f : (0.3f - t) / 0.15f;
-                mat.SetColor("_EmissionColor", Color.Lerp(baseEmit, peak, n));
+                _mat.SetColor("_EmissionColor", Color.Lerp(baseEmit, peak, n));
                 yield return null;
             }
-            mat.SetColor("_EmissionColor", baseEmit);
+            _mat.SetColor("_EmissionColor", baseEmit);
+        }
+
+        public void Conquer(int playerIndex, Color playerColor)
+        {
+            ownedByPlayer = playerIndex;
+            if (_mat == null && tileRenderer != null) _mat = tileRenderer.material;
+            if (_mat == null) return;
+            Color col = Color.Lerp(ElementColors[(int)element], playerColor, 0.55f);
+            _mat.color = col;
+            _mat.EnableKeyword("_EMISSION");
+            _mat.SetColor("_EmissionColor", playerColor * 0.7f);
+        }
+
+        public void Free()
+        {
+            ownedByPlayer = -1;
+            ApplyElementVisuals();
         }
     }
 }
