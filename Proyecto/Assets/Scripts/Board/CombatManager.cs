@@ -1,156 +1,222 @@
 ﻿using System;
 using System.Collections;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
 
 namespace ReinosDelEter
 {
     /// <summary>
-    /// CombatManager — resuelve combates por cartas con animación.
+    /// CombatManager — resuelve combates por cartas.
+    /// Soporta combate grupal: N atacantes combinan fuerza vs 1 defensor.
     ///
-    /// FLUJO DE COMBATE:
-    ///   1. GameManager llama StartCombat(attacker, defender, callback)
-    ///   2. Ambos jugadores eligen una carta (o se elige automáticamente)
-    ///   3. Se reproduce la animación de choque de cartas
-    ///   4. Se calculan resultados por ATK/DEF + elemento
-    ///   5. Se llama onFinished(winner, loser)
+    /// FLUJO:
+    ///   1. StartGroupCombat(attackers, defender, callback)
+    ///   2. Cada jugador elige una carta (5s timeout → auto-selecciona la mejor)
+    ///   3. Atacantes combinan ATK total; defensor usa su carta
+    ///   4. Animación de choque
+    ///   5. Llama callback(attackerWon)
     /// </summary>
     public class CombatManager : MonoBehaviour
     {
-        [Header("Configuración")]
-        public float cardRevealDelay = 0.8f;   // segundos entre revelar cartas
-        public float combatAnimTime = 1.4f;   // duración de la animación de choque
-
-        [Header("Ventaja elemental")]
-        [Tooltip("Factor multiplicador cuando el elemento ataca al débil")]
-        public float elementBonus = 1.5f;
+        [Header("Config")]
+        public float cardSelectTimeout = 5f;
+        public float elementBonus = 1.4f;
 
         // Runtime
-        private Piece _attacker, _defender;
-        private Action<Piece, Piece> _onFinished;
+        private List<Piece> _attackers;
+        private Piece _defender;
+        private Action<bool> _onResult;
 
-        private CardData _atkCard, _defCard;
-        private bool _atkCardSelected, _defCardSelected;
+        private CardData _defCard;
+        private List<CardData> _atkCards = new();
+        private bool _defSelected;
+        private int _atkSelected;
 
-        // ── API pública ───────────────────────────────────────────────────────
+        // ── Public API ───────────────────────────────────────────────────────
+
+        /// <summary>Combate 1v1 — wraps StartGroupCombat.</summary>
         public void StartCombat(Piece attacker, Piece defender, Action<Piece, Piece> onFinished)
         {
-            _attacker = attacker;
+            StartGroupCombat(
+                new List<Piece> { attacker },
+                defender,
+                won => onFinished?.Invoke(won ? attacker : defender,
+                                          won ? defender : attacker));
+        }
+
+        /// <summary>Combate grupal: N fichas atacantes vs 1 defensor.</summary>
+        public void StartGroupCombat(List<Piece> attackers, Piece defender, Action<bool> onResult)
+        {
+            _attackers = attackers;
             _defender = defender;
-            _onFinished = onFinished;
-            _atkCard = _defCard = null;
-            _atkCardSelected = _defCardSelected = false;
+            _onResult = onResult;
+            _atkCards.Clear();
+            _defCard = null;
+            _defSelected = false;
+            _atkSelected = 0;
 
             StartCoroutine(CombatCoroutine());
         }
 
-        /// <summary>Llamado por HUDController cuando el jugador hace click en una carta.</summary>
+        /// <summary>Llamado por HUD cuando el jugador hace click en una carta.</summary>
         public void OnCardSelectedByPlayer(CardData card, PlayerData owner)
         {
-            if (owner.index == _attacker?.playerIndex && !_atkCardSelected)
-            {
-                _atkCard = card;
-                _atkCardSelected = true;
-                GameManager.Instance?.Log($"{owner.playerName} juega: {card.cardName}");
-            }
-            else if (owner.index == _defender?.playerIndex && !_defCardSelected)
+            if (_defender != null && owner.index == _defender.playerIndex && !_defSelected)
             {
                 _defCard = card;
-                _defCardSelected = true;
+                _defSelected = true;
                 GameManager.Instance?.Log($"{owner.playerName} juega: {card.cardName}");
+                return;
             }
+
+            if (_attackers != null)
+                foreach (Piece a in _attackers)
+                    if (owner.index == a.playerIndex && _atkCards.Count <= _attackers.IndexOf(a))
+                    {
+                        _atkCards.Add(card);
+                        _atkSelected++;
+                        GameManager.Instance?.Log($"{owner.playerName} juega: {card.cardName}");
+                        return;
+                    }
         }
 
-        // ── Coroutine de combate ──────────────────────────────────────────────
+        // ── Combat coroutine ─────────────────────────────────────────────────
+
         private IEnumerator CombatCoroutine()
         {
             GameManager gm = GameManager.Instance;
 
-            // ── Fase 1: cada jugador elige carta (máx 5 s o auto) ────────────
-            float timeout = 5f;
+            // ── Fase 1: selección de cartas con timeout ───────────────────────
             float elapsed = 0f;
+            int needed = _attackers.Count + 1; // todos los atacantes + defensor
 
-            // Elige automáticamente la carta con mayor ATK si el jugador no hace click a tiempo
-            PlayerData atkPD = gm.Players[_attacker.playerIndex];
-            PlayerData defPD = gm.Players[_defender.playerIndex];
-
-            while ((!_atkCardSelected || !_defCardSelected) && elapsed < timeout)
+            while ((_atkSelected < _attackers.Count || !_defSelected) && elapsed < cardSelectTimeout)
             {
                 elapsed += Time.deltaTime;
                 yield return null;
             }
 
-            // Auto-selección si no eligieron
-            if (!_atkCardSelected) _atkCard = BestCard(atkPD);
-            if (!_defCardSelected) _defCard = BestCard(defPD);
-
-            if (_atkCard == null || _defCard == null)
+            // Auto-selección para quien no eligió
+            foreach (Piece a in _attackers)
             {
-                // Sin cartas → combate por dado
-                Piece winner = UnityEngine.Random.Range(0, 2) == 0 ? _attacker : _defender;
-                Piece loser = winner == _attacker ? _defender : _attacker;
-                _onFinished?.Invoke(winner, loser);
-                yield break;
+                int idx = _attackers.IndexOf(a);
+                if (idx >= _atkCards.Count)
+                {
+                    var pd = gm.Players[a.playerIndex];
+                    _atkCards.Add(BestCard(pd));
+                }
+            }
+            if (!_defSelected)
+            {
+                var defPD = gm.Players[_defender.playerIndex];
+                _defCard = BestCard(defPD);
             }
 
-            // ── Fase 2: animación de cartas ──────────────────────────────────
-            HUDController hud = UnityEngine.Object.FindFirstObjectByType<HUDController>();
-            yield return StartCoroutine(PlayCombatAnimation(hud, _atkCard, _defCard));
+            // ── Fase 2: animación ─────────────────────────────────────────────
+            var hud = UnityEngine.Object.FindFirstObjectByType<HUDController>();
+            yield return StartCoroutine(PlayCombatAnimation(hud));
 
-            // ── Fase 3: resolución ───────────────────────────────────────────
-            float atkScore = CalculateScore(_atkCard, _defCard, atkPD.element, defPD.element);
-            float defScore = CalculateScore(_defCard, _atkCard, defPD.element, atkPD.element);
+            // ── Fase 3: cálculo ───────────────────────────────────────────────
+            float atkTotal = 0f;
+            for (int i = 0; i < _attackers.Count; i++)
+            {
+                CardData card = _atkCards[i];
+                ElementType ae = _attackers[i].element;
+                ElementType de = _defender.element;
+                float score = card.attackPower - (_defCard?.defensePower ?? 0) * 0.3f;
+                if (Beats(ae, de)) score *= elementBonus;
+                atkTotal += Mathf.Max(1f, score);
+            }
 
-            gm.Log($"{_atkCard.cardName} ({atkScore:F0}) vs {_defCard.cardName} ({defScore:F0})");
+            float defTotal = 0f;
+            if (_defCard != null)
+            {
+                float score = _defCard.attackPower
+                            - _atkCards[0].defensePower * 0.3f * _attackers.Count;
+                ElementType de = _defender.element;
+                // Defensor gana bonus si su elemento vence al primero de los atacantes
+                if (Beats(de, _attackers[0].element)) score *= elementBonus;
+                defTotal = Mathf.Max(1f, score);
+            }
 
-            Piece combatWinner = atkScore >= defScore ? _attacker : _defender;
-            Piece combatLoser = atkScore >= defScore ? _defender : _attacker;
+            bool attackerWon = atkTotal >= defTotal;
+            gm.Log($"ATK total: {atkTotal:F0} vs DEF: {defTotal:F0} → {(attackerWon ? "Atacantes ganan" : "Defensor gana")}");
 
-            // Aplica efecto de la carta ganadora
-            CardData winCard = atkScore >= defScore ? _atkCard : _defCard;
-            ApplyCardEffect(winCard, gm.Players[combatWinner.playerIndex],
-                                     gm.Players[combatLoser.playerIndex]);
+            // Aplica efectos de cartas
+            if (attackerWon)
+            {
+                var winPD = gm.Players[_attackers[0].playerIndex];
+                var losePD = gm.Players[_defender.playerIndex];
+                int dmg = Mathf.RoundToInt(atkTotal * 0.5f);
+                losePD.TakeDamage(dmg);
+                winPD.score += 10;
+                ApplyCardEffect(_atkCards[0], winPD, losePD);
+            }
+            else
+            {
+                var winPD = gm.Players[_defender.playerIndex];
+                var losePD = gm.Players[_attackers[0].playerIndex];
+                int dmg = Mathf.RoundToInt(defTotal * 0.5f);
+                losePD.TakeDamage(dmg);
+                winPD.score += 10;
+                if (_defCard != null) ApplyCardEffect(_defCard, winPD, losePD);
+            }
 
-            // Consume energía y remueve carta usada
-            atkPD.SpendEnergy(_atkCard);
-            defPD.SpendEnergy(_defCard);
-            atkPD.RemoveCard(_atkCard);
-            defPD.RemoveCard(_defCard);
+            // Consume cartas
+            foreach (Piece a in _attackers)
+            {
+                int idx = _attackers.IndexOf(a);
+                if (idx < _atkCards.Count && _atkCards[idx] != null)
+                {
+                    var pd = gm.Players[a.playerIndex];
+                    pd.SpendEnergy(_atkCards[idx]);
+                    pd.RemoveCard(_atkCards[idx]);
+                }
+            }
+            if (_defCard != null)
+            {
+                var defPD = gm.Players[_defender.playerIndex];
+                defPD.SpendEnergy(_defCard);
+                defPD.RemoveCard(_defCard);
+            }
 
-            yield return new WaitForSeconds(0.5f);
-            _onFinished?.Invoke(combatWinner, combatLoser);
+            yield return new WaitForSeconds(0.4f);
+            _onResult?.Invoke(attackerWon);
         }
 
         // ── Animación ─────────────────────────────────────────────────────────
-        private IEnumerator PlayCombatAnimation(HUDController hud, CardData atkCard, CardData defCard)
-        {
-            // Si el HUD tiene el panel de combate, anima las cartas acercándose
-            if (hud == null) { yield return new WaitForSeconds(combatAnimTime); yield break; }
 
-            // Simula "choque": las cartas se acercan, flash, retroceden
+        private IEnumerator PlayCombatAnimation(HUDController hud)
+        {
+            if (hud == null) { yield return new WaitForSeconds(1f); yield break; }
+
             RawImage atkImg = hud.attackerCardDisplay;
             RawImage defImg = hud.defenderCardDisplay;
 
-            if (atkImg != null) atkImg.texture = hud.GetCardTexture(atkCard);
-            if (defImg != null) defImg.texture = hud.GetCardTexture(defCard);
+            if (atkImg != null && _atkCards.Count > 0)
+                atkImg.texture = hud.GetCardTexture(_atkCards[0]);
+            if (defImg != null)
+                defImg.texture = hud.GetCardTexture(_defCard);
 
-            Vector2 atkStart = atkImg != null ? atkImg.rectTransform.anchoredPosition : Vector2.zero;
-            Vector2 defStart = defImg != null ? defImg.rectTransform.anchoredPosition : Vector2.zero;
-            Vector2 center = Vector2.zero;
+            // Acercamiento
+            Vector2 atkStart = atkImg?.rectTransform.anchoredPosition ?? Vector2.zero;
+            Vector2 defStart = defImg?.rectTransform.anchoredPosition ?? Vector2.zero;
 
-            // Fase acercamiento
-            for (float t = 0; t < cardRevealDelay; t += Time.deltaTime)
+            for (float t = 0; t < 0.5f; t += Time.deltaTime)
             {
-                float p = t / cardRevealDelay;
-                if (atkImg != null) atkImg.rectTransform.anchoredPosition = Vector2.Lerp(atkStart, center * 0.3f + atkStart * 0.7f, p);
-                if (defImg != null) defImg.rectTransform.anchoredPosition = Vector2.Lerp(defStart, center * 0.3f + defStart * 0.7f, p);
+                float p = t / 0.5f;
+                if (atkImg != null) atkImg.rectTransform.anchoredPosition =
+                    Vector2.Lerp(atkStart, atkStart * 0.5f, p);
+                if (defImg != null) defImg.rectTransform.anchoredPosition =
+                    Vector2.Lerp(defStart, defStart * 0.5f, p);
                 yield return null;
             }
 
             // Flash de choque
             for (float t = 0; t < 0.25f; t += Time.deltaTime)
             {
-                float brightness = 1f + Mathf.Sin(t / 0.25f * Mathf.PI) * 1.5f;
+                float brightness = 1f + Mathf.Sin(t / 0.25f * Mathf.PI) * 2f;
                 if (atkImg != null) atkImg.color = Color.white * brightness;
                 if (defImg != null) defImg.color = Color.white * brightness;
                 yield return null;
@@ -159,11 +225,13 @@ namespace ReinosDelEter
             if (defImg != null) defImg.color = Color.white;
 
             // Retroceso
-            for (float t = 0; t < 0.4f; t += Time.deltaTime)
+            for (float t = 0; t < 0.3f; t += Time.deltaTime)
             {
-                float p = t / 0.4f;
-                if (atkImg != null) atkImg.rectTransform.anchoredPosition = Vector2.Lerp(center * 0.3f + atkStart * 0.7f, atkStart, p);
-                if (defImg != null) defImg.rectTransform.anchoredPosition = Vector2.Lerp(center * 0.3f + defStart * 0.7f, defStart, p);
+                float p = t / 0.3f;
+                if (atkImg != null) atkImg.rectTransform.anchoredPosition =
+                    Vector2.Lerp(atkStart * 0.5f, atkStart, p);
+                if (defImg != null) defImg.rectTransform.anchoredPosition =
+                    Vector2.Lerp(defStart * 0.5f, defStart, p);
                 yield return null;
             }
 
@@ -171,17 +239,7 @@ namespace ReinosDelEter
             if (defImg != null) defImg.rectTransform.anchoredPosition = defStart;
         }
 
-        // ── Lógica ────────────────────────────────────────────────────────────
-        private float CalculateScore(CardData myCard, CardData enemyCard,
-                                     ElementType myElement, ElementType enemyElement)
-        {
-            float score = myCard.attackPower - enemyCard.defensePower * 0.5f;
-
-            // Ventaja elemental: Water > Fire > Earth > Air > Water
-            if (Beats(myElement, enemyElement)) score *= elementBonus;
-
-            return Mathf.Max(1, score);
-        }
+        // ── Helpers ──────────────────────────────────────────────────────────
 
         private bool Beats(ElementType a, ElementType b) =>
             (a == ElementType.Water && b == ElementType.Fire) ||
@@ -189,45 +247,42 @@ namespace ReinosDelEter
             (a == ElementType.Earth && b == ElementType.Air) ||
             (a == ElementType.Air && b == ElementType.Water);
 
+        private CardData BestCard(PlayerData pd)
+        {
+            if (pd.hand == null || pd.hand.Count == 0) return null;
+            CardData best = pd.hand[0];
+            foreach (var c in pd.hand)
+                if (c.attackPower > best.attackPower) best = c;
+            return best;
+        }
+
         private void ApplyCardEffect(CardData card, PlayerData winner, PlayerData loser)
         {
+            if (card == null) return;
+            var gm = GameManager.Instance;
             switch (card.effectType)
             {
                 case CardEffectType.Heal:
                     winner.Heal(card.effectValue);
-                    GameManager.Instance?.Log($"{winner.playerName} recupera {card.effectValue} HP");
+                    gm?.Log($"{winner.playerName} recupera {card.effectValue} HP");
                     break;
                 case CardEffectType.DoubleDamage:
-                    int extra = card.attackPower;
-                    loser.TakeDamage(extra);
-                    GameManager.Instance?.Log($"Daño doble! {loser.playerName} pierde {extra} HP extra");
+                    loser.TakeDamage(card.attackPower);
+                    gm?.Log($"Daño doble! {loser.playerName} -{card.attackPower} HP extra");
                     break;
                 case CardEffectType.Shield:
                     winner.Heal(card.effectValue / 2);
                     break;
                 case CardEffectType.StealCard:
-                    if (loser.hand.Count > 0)
+                    if (loser.hand?.Count > 0)
                     {
                         var stolen = loser.hand[0];
-                        loser.hand.Remove(stolen);
-                        winner.hand.Add(stolen);
-                        GameManager.Instance?.Log($"{winner.playerName} roba {stolen.cardName}!");
+                        loser.RemoveCard(stolen);
+                        winner.hand?.Add(stolen);
+                        gm?.Log($"{winner.playerName} roba {stolen.cardName}!");
                     }
                     break;
-                case CardEffectType.ExtraMove:
-                    // Señal al GameManager para mover extra (implementación futura)
-                    GameManager.Instance?.Log($"{winner.playerName} avanza {card.effectValue} casillas extra");
-                    break;
             }
-        }
-
-        private CardData BestCard(PlayerData pd)
-        {
-            if (pd.hand.Count == 0) return null;
-            CardData best = pd.hand[0];
-            foreach (var c in pd.hand)
-                if (c.attackPower > best.attackPower) best = c;
-            return best;
         }
     }
 }

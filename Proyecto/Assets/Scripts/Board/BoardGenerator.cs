@@ -4,297 +4,195 @@ using UnityEngine;
 namespace ReinosDelEter
 {
     /// <summary>
-    /// Genera el tablero de Reinos del Éter:
+    /// Tablero de Reinos del Éter — grafo explícito sin nodos artificiales.
     ///
-    ///   Estructura:
-    ///   • 4 brazos diagonales (X) que van desde cada castillo al centro
-    ///   • Anillo exterior cuadrado que conecta los 4 brazos entre sí
-    ///   • Casilla central (portal)
-    ///   • Casilla de combate a mitad de cada brazo
+    /// REGLAS DEL GRAFO:
+    ///   • Cada tile del brazo conecta SOLO con el anterior y el siguiente del brazo
+    ///   • El tile más cercano al centro (arm[last]) conecta además con el centro
+    ///   • El castillo (arm[0]) conecta con arm[1] + los 2 tiles del anillo adyacentes
+    ///   • Los tiles del anillo conectan solo con sus vecinos del anillo
+    ///   • El centro conecta con los 4 tiles arm[last]
     ///
-    ///   Disposición visual:
-    ///
-    ///       [Agua]---ring---[Fuego]
-    ///         \               /
-    ///        ring    [C]    ring
-    ///         /               \
-    ///      [Tierra]--ring---[Aire]
-    ///
+    /// RESULTADO:
+    ///   • Tiles del brazo intermedios: siempre 2 vecinos → avanzan automático
+    ///   • Castillo: 3 vecinos → pide dirección al inicio
+    ///   • arm[last]: 2 vecinos (arm[last-1] + centro) → avanzan automático
+    ///   • Centro: 4 vecinos → pide dirección
+    ///   • Tiles del anillo intermedios: 2 vecinos → avanzan automático
     /// </summary>
     public class BoardGenerator : MonoBehaviour
     {
         [Header("Prefabs")]
         public GameObject tilePrefab;
         public GameObject centerPrefab;
-        [Tooltip("0=Water 1=Fire 2=Earth 3=Air")]
         public GameObject[] castlePrefabs;
 
         [Header("Layout")]
-        [Range(4, 10)] public int tilesPerArm = 6;   // tiles desde castillo al anillo
-        [Range(2, 8)] public int ringSegment = 4;   // tiles por lado del anillo entre brazos
-        public float armSpacing = 1.5f;              // distancia entre tiles del brazo
+        [Range(3, 10)] public int tilesPerArm = 5;
+        [Range(2, 8)] public int ringTilesPerSide = 4;
+        public float armSpacing = 1.5f;
         public float tileWidth = 1.0f;
         public float tileHeight = 0.22f;
 
         [Header("Visual")]
         public bool enableEmission = true;
 
-        // ── Runtime data ──────────────────────────────────────────────────────
-        /// <summary>Brazos: paths[0..3] desde castillo hacia el anillo (índice 0 = castillo).</summary>
+        // ── Runtime ──────────────────────────────────────────────────────────
         public List<Tile>[] paths { get; private set; }
         public Tile centerTile { get; private set; }
         public Tile[] startTiles { get; private set; }
 
-        // Esquinas del anillo (donde se juntan los brazos)
-        private Tile[] _corners = new Tile[4];
+        // Ring sides: _ringSides[r] = tiles entre castillo[RingOrder[r]] y castillo[RingOrder[r+1]]
+        private List<Tile>[] _ringSides;
+        private static readonly int[] RingOrder = { 0, 1, 3, 2 };
 
-        // Tiles del anillo entre esquinas: _ring[i] = lista de tiles entre corner i y corner (i+1)%4
-        private List<Tile>[] _ringSegments;
-
-        // Direcciones diagonales de cada brazo desde el centro
-        // 0=Water(top-left) 1=Fire(top-right) 2=Earth(bottom-left) 3=Air(bottom-right)
         private static readonly Vector3[] ArmDirs =
         {
-            new Vector3(-1f, 0f,  1f).normalized,
-            new Vector3( 1f, 0f,  1f).normalized,
-            new Vector3(-1f, 0f, -1f).normalized,
-            new Vector3( 1f, 0f, -1f).normalized,
+            new Vector3(-1f, 0f,  1f).normalized,  // 0 Water
+            new Vector3( 1f, 0f,  1f).normalized,  // 1 Fire
+            new Vector3(-1f, 0f, -1f).normalized,  // 2 Earth
+            new Vector3( 1f, 0f, -1f).normalized,  // 3 Air
         };
 
-        // ── Lifecycle ─────────────────────────────────────────────────────────
         private void Awake() => GenerateBoard();
 
-        // ── Public API ────────────────────────────────────────────────────────
-        public Tile GetStartTile(int playerIndex)
-        {
-            int idx = playerIndex % 4;
-            if (paths == null || paths[idx] == null || paths[idx].Count == 0)
-            {
-                Debug.LogError($"[BoardGenerator] GetStartTile({playerIndex}): paths[{idx}] es null o vacío!");
-                return null;
-            }
-            return paths[idx][0];
-        }
+        public Tile GetStartTile(int playerIndex) => startTiles[playerIndex % 4];
 
-        /// <summary>Retorna la startTile del brazo que corresponde al elemento dado.</summary>
         public Tile GetStartTileByElement(ElementType element)
         {
             int idx = (int)element;
-            if (paths == null || paths[idx] == null || paths[idx].Count == 0)
-            {
-                Debug.LogError($"[BoardGenerator] GetStartTileByElement({element}): paths[{idx}] null!");
-                return null;
-            }
+            if (paths == null || paths[idx] == null || paths[idx].Count == 0) return null;
             return paths[idx][0];
         }
-        public Tile GetTile(int pathIndex, int pos) => paths[pathIndex][pos];
 
-        // ── Generation ────────────────────────────────────────────────────────
         [ContextMenu("Generate Board")]
         public void GenerateBoard()
         {
             ClearBoard();
-
             paths = new List<Tile>[4];
             startTiles = new Tile[4];
-            _ringSegments = new List<Tile>[4];
+            _ringSides = new List<Tile>[4];
 
-            // ── 1. Centro ────────────────────────────────────────────────────
+            // ── 1. Centro ─────────────────────────────────────────────────────
             centerTile = SpawnTile(Vector3.zero, ElementType.Center, TileType.Center, -1, -1);
             if (centerPrefab != null)
                 Instantiate(centerPrefab, Vector3.zero, Quaternion.identity, transform);
 
-            // ── 2. Brazos diagonales ─────────────────────────────────────────
-            // La esquina del anillo está a (tilesPerArm + 1) * armSpacing del centro
-            float cornerDist = (tilesPerArm + 1) * armSpacing;
-
+            // ── 2. Brazos ─────────────────────────────────────────────────────
+            // paths[p][0] = castillo, paths[p][last] = más cercano al centro
             for (int p = 0; p < 4; p++)
             {
                 paths[p] = new List<Tile>();
                 Vector3 dir = ArmDirs[p];
                 ElementType elem = (ElementType)p;
 
-                // Tiles del brazo: índice 0 = castillo (más lejos), último = esquina del anillo
-                // Generamos de afuera hacia adentro para facilitar la navegación
-                for (int i = tilesPerArm; i >= 0; i--)
+                for (int i = tilesPerArm; i >= 1; i--)
                 {
-                    float dist = (i + 1) * armSpacing;
-                    Vector3 pos = dir * dist;
-
-                    TileType tType = TileType.Normal;
-                    if (i == tilesPerArm) tType = TileType.Start;  // castillo
-                    else if (i == tilesPerArm / 2) tType = TileType.Combat; // mitad del brazo
-
-                    Tile t = SpawnTile(pos, elem, tType, p, i);
-                    paths[p].Add(t);
+                    float dist = i * armSpacing;
+                    TileType tt = (i == tilesPerArm) ? TileType.Start : TileType.Normal;
+                    Tile tile = SpawnTile(dir * dist, elem, tt, p, i);
+                    paths[p].Add(tile);
                 }
-
-                // paths[p][0] = castillo, paths[p][last] = tile junto al anillo (esquina interna)
                 startTiles[p] = paths[p][0];
 
-                // Esquina del anillo
-                Vector3 cornerPos = dir * cornerDist;
-                Tile corner = SpawnTile(cornerPos, elem, TileType.Normal, p, -2);
-                if (corner == null) { Debug.LogError("[BoardGenerator] corner null — verifica que Tile Prefab esté asignado."); return; }
-                corner.name = $"Corner_{elem}";
-                _corners[p] = corner;
-
-                // Castillo decorativo
                 if (castlePrefabs != null && p < castlePrefabs.Length && castlePrefabs[p] != null)
                 {
-                    Vector3 castlePos = dir * (cornerDist + armSpacing * 1.8f);
-                    var castle = Instantiate(castlePrefabs[p], castlePos, Quaternion.identity, transform);
-                    castle.transform.LookAt(Vector3.zero);
+                    var c = Instantiate(castlePrefabs[p],
+                        dir * ((tilesPerArm + 1.8f) * armSpacing),
+                        Quaternion.identity, transform);
+                    c.transform.LookAt(Vector3.zero);
                 }
             }
 
-            // ── 3. Anillo entre esquinas ──────────────────────────────────────
-            // Orden de esquinas para el anillo: Water(0) → Fire(1) → Air(3) → Earth(2) → Water
-            int[] ringOrder = { 0, 1, 3, 2 };
-
+            // ── 3. Anillo ─────────────────────────────────────────────────────
+            // El anillo va entre los castillos adyacentes
             for (int r = 0; r < 4; r++)
             {
-                int idxA = ringOrder[r];
-                int idxB = ringOrder[(r + 1) % 4];
+                int idxA = RingOrder[r];
+                int idxB = RingOrder[(r + 1) % 4];
+                _ringSides[r] = new List<Tile>();
 
-                Vector3 posA = _corners[idxA].transform.position;
-                Vector3 posB = _corners[idxB].transform.position;
+                Vector3 posA = paths[idxA][0].transform.position; // castillo A
+                Vector3 posB = paths[idxB][0].transform.position; // castillo B
 
-                // Elemento: mezcla de los dos elementos de los extremos (usamos el primero)
-                ElementType ringElem = (ElementType)idxA;
-
-                _ringSegments[r] = new List<Tile>();
-                for (int s = 1; s <= ringSegment; s++)
+                int half = ringTilesPerSide / 2;
+                for (int s = 1; s <= ringTilesPerSide; s++)
                 {
-                    float t = (float)s / (ringSegment + 1);
+                    float t = (float)s / (ringTilesPerSide + 1);
                     Vector3 pos = Vector3.Lerp(posA, posB, t);
                     pos.y = 0f;
-
-                    Tile rt = SpawnTile(pos, ringElem, TileType.Normal, -1, -1);
+                    ElementType elem = s <= half ? (ElementType)idxA : (ElementType)idxB;
+                    Tile rt = SpawnTile(pos, elem, TileType.Normal, -1, -1);
                     rt.name = $"Ring_{idxA}to{idxB}_{s}";
-                    _ringSegments[r].Add(rt);
+                    _ringSides[r].Add(rt);
                 }
             }
 
-            // ── 4. Conectar navegación ────────────────────────────────────────
-            WireNavigation(ringOrder);
+            // ── 4. Grafo explícito ────────────────────────────────────────────
+            BuildGraph();
 
-            Debug.Log($"[BoardGenerator] Tablero generado — {CountTiles()} tiles.");
+            // Log para verificar
+            foreach (var st in startTiles)
+                Debug.Log($"[BG] Castle {st.name} → {st.neighbors.Count} vecinos: " +
+                          string.Join(", ", st.neighbors.ConvertAll(n => n.name)));
+            Debug.Log($"[BG] Center → {centerTile.neighbors.Count} vecinos");
         }
 
-        // ── Wiring ────────────────────────────────────────────────────────────
-        private void WireNavigation(int[] ringOrder)
+        private void BuildGraph()
         {
-            // ── Brazos: castillo → ... → último tile → esquina ────────────────
+            // ── Brazos: chain lineal ──────────────────────────────────────────
+            // paths[p][0]=castillo ... paths[p][last]=junto al centro
+            // Solo conecta tiles consecutivos del brazo
             for (int p = 0; p < 4; p++)
             {
-                List<Tile> arm = paths[p];
+                var arm = paths[p];
                 for (int i = 0; i < arm.Count - 1; i++)
                 {
-                    arm[i].nextTile = arm[i + 1];
-                    arm[i + 1].previousTile = arm[i];
+                    arm[i].AddNeighbor(arm[i + 1]);
+                    arm[i + 1].AddNeighbor(arm[i]);
                 }
-                // Último tile del brazo apunta a la esquina
-                arm[arm.Count - 1].nextTile = _corners[p];
-                _corners[p].previousTile = arm[arm.Count - 1];
+                // Último tile del brazo ↔ centro
+                arm[arm.Count - 1].AddNeighbor(centerTile);
+                centerTile.AddNeighbor(arm[arm.Count - 1]);
             }
 
-            // ── Anillo: wire segmentos entre esquinas ─────────────────────────
+            // ── Anillo: chain lineal entre castillos ──────────────────────────
             for (int r = 0; r < 4; r++)
             {
-                int idxA = ringOrder[r];
-                int idxB = ringOrder[(r + 1) % 4];
-                var seg = _ringSegments[r];
-                Tile cornerA = _corners[idxA];
-                Tile cornerB = _corners[idxB];
+                int idxA = RingOrder[r];
+                int idxB = RingOrder[(r + 1) % 4];
+                var seg = _ringSides[r];
+                Tile ca = paths[idxA][0]; // castillo A
+                Tile cb = paths[idxB][0]; // castillo B
 
-                if (seg.Count == 0) continue;
+                // castillo A ↔ seg[0] ↔ ... ↔ seg[last] ↔ castillo B
+                ca.AddNeighbor(seg[0]);
+                seg[0].AddNeighbor(ca);
 
-                // Color split
-                int half = seg.Count / 2;
-                for (int s = 0; s < seg.Count; s++)
-                {
-                    seg[s].element = s < half ? (ElementType)idxA : (ElementType)idxB;
-                    if (enableEmission) seg[s].ApplyElementVisuals();
-                }
-
-                // Wire: cornerA → seg[0] → ... → seg[last] → cornerB
-                seg[0].previousTile = cornerA;
                 for (int s = 0; s < seg.Count - 1; s++)
                 {
-                    seg[s].nextTile = seg[s + 1];
-                    seg[s + 1].previousTile = seg[s];
+                    seg[s].AddNeighbor(seg[s + 1]);
+                    seg[s + 1].AddNeighbor(seg[s]);
                 }
-                seg[seg.Count - 1].nextTile = cornerB;
+
+                seg[seg.Count - 1].AddNeighbor(cb);
+                cb.AddNeighbor(seg[seg.Count - 1]);
             }
-
-            // ── Esquinas: connectedTiles = [hacia centro, anillo izq, anillo der] ──
-            // Construye mapa: qué segmento de anillo empieza/termina en cada esquina
-            // ringOrder: 0→1→3→2→0
-            // seg[r] va de ringOrder[r] a ringOrder[r+1]
-            // Para corner idxA: seg que SALE = seg[r donde ringOrder[r]==idxA]
-            //                   seg que LLEGA = seg[r donde ringOrder[(r+1)%4]==idxA]
-
-            for (int p = 0; p < 4; p++)
-            {
-                Tile corner = _corners[p];
-                List<Tile> options = new List<Tile>();
-
-                // Opción 1: ir al centro
-                options.Add(centerTile);
-
-                // Opción 2: primer tile del segmento de anillo que SALE de esta esquina
-                for (int r = 0; r < 4; r++)
-                {
-                    if (ringOrder[r] == p && _ringSegments[r].Count > 0)
-                    {
-                        options.Add(_ringSegments[r][0]);
-                        break;
-                    }
-                }
-
-                // Opción 3: último tile del segmento de anillo que LLEGA a esta esquina
-                for (int r = 0; r < 4; r++)
-                {
-                    if (ringOrder[(r + 1) % 4] == p && _ringSegments[r].Count > 0)
-                    {
-                        options.Add(_ringSegments[r][_ringSegments[r].Count - 1]);
-                        break;
-                    }
-                }
-
-                corner.nextTile = null;           // sin dirección por defecto
-                corner.connectedTiles = options.ToArray();
-            }
-
-            // ── Centro: sin nextTile, es destino final ────────────────────────
-            centerTile.nextTile = null;
-            centerTile.connectedTiles = null;
         }
 
-        // ── Spawn helpers ─────────────────────────────────────────────────────
-        private Tile SpawnTile(Vector3 pos, ElementType elem,
-                               TileType tType, int pathIdx, int posIdx)
+        private Tile SpawnTile(Vector3 pos, ElementType elem, TileType tType, int pIdx, int posIdx)
         {
-            if (tilePrefab == null)
-            {
-                Debug.LogError("[BoardGenerator] tilePrefab no asignado.");
-                return null;
-            }
-
-            GameObject go = Instantiate(tilePrefab, pos, Quaternion.identity, transform);
+            if (tilePrefab == null) { Debug.LogError("[BG] tilePrefab null"); return null; }
+            var go = Instantiate(tilePrefab, pos, Quaternion.identity, transform);
             go.transform.localScale = new Vector3(tileWidth, tileHeight, tileWidth);
             go.name = tType == TileType.Center ? "Tile_Center"
-                    : $"Tile_{elem}_P{pathIdx}_I{posIdx}";
-
+                    : $"Tile_{elem}_P{pIdx}_I{posIdx}";
             Tile tile = go.GetComponent<Tile>() ?? go.AddComponent<Tile>();
             tile.element = elem;
             tile.tileType = tType;
-            tile.pathIndex = pathIdx;
+            tile.pathIndex = pIdx;
             tile.positionOnPath = posIdx;
-
             if (enableEmission) tile.ApplyElementVisuals();
-
             return tile;
         }
 
@@ -302,47 +200,6 @@ namespace ReinosDelEter
         {
             for (int i = transform.childCount - 1; i >= 0; i--)
                 DestroyImmediate(transform.GetChild(i).gameObject);
-        }
-
-        private int CountTiles()
-        {
-            int n = 1 + 4; // center + 4 corners
-            foreach (var p in paths) n += p.Count;
-            foreach (var s in _ringSegments) if (s != null) n += s.Count;
-            return n;
-        }
-
-        // ── Gizmos ────────────────────────────────────────────────────────────
-        private void OnDrawGizmos()
-        {
-            if (paths == null) return;
-            Color[] cols = { Color.blue, Color.red, Color.green, Color.white };
-
-            for (int p = 0; p < 4; p++)
-            {
-                if (paths[p] == null) continue;
-                Gizmos.color = cols[p];
-
-                for (int i = 0; i < paths[p].Count - 1; i++)
-                    if (paths[p][i] && paths[p][i + 1])
-                        Gizmos.DrawLine(paths[p][i].transform.position,
-                                        paths[p][i + 1].transform.position);
-
-                if (_corners != null && _corners[p] != null && paths[p].Count > 0)
-                    Gizmos.DrawLine(paths[p][paths[p].Count - 1].transform.position,
-                                    _corners[p].transform.position);
-            }
-
-            if (_ringSegments == null) return;
-            Gizmos.color = Color.yellow;
-            for (int r = 0; r < 4; r++)
-            {
-                if (_ringSegments[r] == null) continue;
-                for (int s = 0; s < _ringSegments[r].Count - 1; s++)
-                    if (_ringSegments[r][s] && _ringSegments[r][s + 1])
-                        Gizmos.DrawLine(_ringSegments[r][s].transform.position,
-                                        _ringSegments[r][s + 1].transform.position);
-            }
         }
     }
 }
