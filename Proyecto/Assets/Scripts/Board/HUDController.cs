@@ -67,6 +67,22 @@ namespace ReinosDelEter
         {
             _players = players;
 
+            // Auto-detectar handContainer si no está asignado
+            if (handContainer == null)
+            {
+                Transform hc = transform.Find("BottomBar/HandContainer");
+                if (hc != null)
+                {
+                    handContainer = hc;
+                    Debug.Log("[HUD] handContainer auto-detectado");
+                }
+                else
+                {
+                    Debug.LogWarning("[HUD] handContainer NO ENCONTRADO. Creando automáticamente...");
+                    CreateHandContainerIfNeeded();
+                }
+            }
+
             // Si no hay referencias asignadas, auto-genera un HUD mínimo
             if (turnLabel == null) SetupMinimalHUD();
 
@@ -81,7 +97,67 @@ namespace ReinosDelEter
             for (int i = 0; i < players.Count && i < playerPanels?.Length; i++)
                 playerPanels[i]?.Setup(players[i]);
 
+            // DEBUG: Mostrar estado de referencias críticas
+            DebugReferences();
+
             ShowTurn(players[0]);
+        }
+
+        /// <summary>Crea HandContainer si no existe.</summary>
+        private void CreateHandContainerIfNeeded()
+        {
+            Canvas canvas = GetComponent<Canvas>();
+            if (canvas == null) canvas = GetComponentInParent<Canvas>();
+            if (canvas == null) return;
+
+            Transform bottomBar = canvas.transform.Find("BottomBar");
+            if (bottomBar == null)
+            {
+                GameObject bottomBarGO = new GameObject("BottomBar");
+                bottomBar = bottomBarGO.transform;
+                bottomBar.SetParent(canvas.transform, false);
+                var rt = bottomBarGO.AddComponent<RectTransform>();
+                rt.anchorMin = new Vector2(0, 0);
+                rt.anchorMax = new Vector2(1, 0.15f);
+                rt.offsetMin = Vector2.zero;
+                rt.offsetMax = Vector2.zero;
+            }
+
+            Transform hc = bottomBar.Find("HandContainer");
+            if (hc == null)
+            {
+                GameObject hcGO = new GameObject("HandContainer");
+                hc = hcGO.transform;
+                hc.SetParent(bottomBar, false);
+                
+                var hcrt = hcGO.AddComponent<RectTransform>();
+                hcrt.anchorMin = Vector2.zero;
+                hcrt.anchorMax = Vector2.one;
+                hcrt.offsetMin = Vector2.zero;
+                hcrt.offsetMax = Vector2.zero;
+                
+                var hlg = hcGO.AddComponent<HorizontalLayoutGroup>();
+                hlg.spacing = 5;
+                hlg.childForceExpandWidth = true;
+                hlg.childForceExpandHeight = true;
+                hlg.childControlWidth = true;
+                hlg.childControlHeight = true;
+            }
+
+            handContainer = hc;
+            Debug.Log("[HUD] handContainer creado automáticamente");
+        }
+
+        /// <summary>Muestra en consola qué referencias faltan.</summary>
+        private void DebugReferences()
+        {
+            string status = "[HUD] Estado de referencias:\n";
+            status += $"  • handContainer: {(handContainer != null ? "✓" : "✗ NULL")}\n";
+            status += $"  • cardSlotPrefab: {(cardSlotPrefab != null ? "✓" : "✗ NULL (usando fallback)")}\n";
+            status += $"  • turnLabel: {(turnLabel != null ? "✓" : "✗ NULL")}\n";
+            status += $"  • messageLabel: {(messageLabel != null ? "✓" : "✗ NULL")}\n";
+            
+            Debug.Log(status);
         }
 
         // ── API pública ──────────────────────────────────────────────────────
@@ -150,20 +226,175 @@ namespace ReinosDelEter
         // ── Mano de cartas ───────────────────────────────────────────────────
         private void RefreshHand(PlayerData pd)
         {
-            if (handContainer == null) return;
+            if (pd == null || pd.hand == null)
+            {
+                Debug.LogWarning("[HUD] PlayerData o hand es NULL");
+                return;
+            }
+
+            Debug.Log($"[HUD] Refrescando mano: {pd.playerName} ({pd.hand.Count} cartas)");
+
+            // Verificar handContainer
+            if (handContainer == null)
+            {
+                Debug.LogError("[HUD] handContainer es NULL. No se puede mostrar cartas.");
+                return;
+            }
 
             // Limpia slots anteriores
-            foreach (var slot in _handSlots) Destroy(slot.gameObject);
+            foreach (var slot in _handSlots) 
+            {
+                if (slot != null) Destroy(slot.gameObject);
+            }
             _handSlots.Clear();
 
-            if (cardSlotPrefab == null) return;
+            // Si no hay prefab, crear slots en código (fallback)
+            if (cardSlotPrefab == null)
+            {
+                Debug.Log("[HUD] cardSlotPrefab NULL → usando fallback (creando en código)");
+                CreateHandSlotsInCode(pd);
+                return;
+            }
 
+            // Si hay prefab, usarlo
             foreach (CardData card in pd.hand)
             {
                 GameObject go = Instantiate(cardSlotPrefab, handContainer);
+                go.name = $"Slot_{card.cardName}";
                 CardSlotUI slot = go.GetComponent<CardSlotUI>() ?? go.AddComponent<CardSlotUI>();
                 slot.Setup(card, pd, OnCardClicked);
                 _handSlots.Add(slot);
+            }
+        }
+
+        /// <summary>
+        /// Fallback: crea slots de carta directamente en código si no hay prefab.
+        /// </summary>
+        private void CreateHandSlotsInCode(PlayerData pd)
+        {
+            if (pd.hand.Count == 0)
+            {
+                Debug.LogWarning("[HUD] Mano vacía");
+                return;
+            }
+
+            Debug.Log($"[HUD] Creando {pd.hand.Count} slots en código...");
+
+            foreach (CardData card in pd.hand)
+            {
+                GameObject go = new GameObject($"CardSlot_{card.cardName}");
+                go.transform.SetParent(handContainer, false);
+                
+                // ── RectTransform ──
+                var rt = go.AddComponent<RectTransform>();
+                rt.sizeDelta = new Vector2(90, 130);
+                rt.anchoredPosition = Vector2.zero;
+                
+                // ── Fondo (Background Image) ──
+                var bgImage = go.AddComponent<Image>();
+                bgImage.color = Color.gray;
+                bgImage.raycastTarget = true;
+
+                // ── Crear Art Image (para mostrar sprite) ──
+                GameObject artGo = new GameObject("Art");
+                artGo.transform.SetParent(go.transform, false);
+                var artRT = artGo.AddComponent<RectTransform>();
+                artRT.anchorMin = new Vector2(0.05f, 0.3f);
+                artRT.anchorMax = new Vector2(0.95f, 0.95f);
+                artRT.offsetMin = Vector2.zero;
+                artRT.offsetMax = Vector2.zero;
+                var artImage = artGo.AddComponent<Image>();
+                artImage.raycastTarget = false;
+                artImage.preserveAspect = true;
+                artImage.material = null;
+                // IMPORTANTE: asegurar que sea visible
+                artImage.enabled = true;
+
+                // ── Crear Placeholder RawImage ──
+                GameObject phGo = new GameObject("Placeholder");
+                phGo.transform.SetParent(go.transform, false);
+                var phRT = phGo.AddComponent<RectTransform>();
+                phRT.anchorMin = new Vector2(0.05f, 0.3f);
+                phRT.anchorMax = new Vector2(0.95f, 0.95f);
+                phRT.offsetMin = Vector2.zero;
+                phRT.offsetMax = Vector2.zero;
+                var phImage = phGo.AddComponent<RawImage>();
+                phImage.raycastTarget = false;
+
+                // ── Labels de texto ──
+                // Nombre
+                GameObject nameGo = new GameObject("Name");
+                nameGo.transform.SetParent(go.transform, false);
+                var nameRT = nameGo.AddComponent<RectTransform>();
+                nameRT.anchorMin = new Vector2(0.0f, 0.82f);
+                nameRT.anchorMax = new Vector2(1f, 1f);
+                nameRT.offsetMin = Vector2.zero;
+                nameRT.offsetMax = Vector2.zero;
+                var nameTMP = nameGo.AddComponent<TextMeshProUGUI>();
+                nameTMP.fontSize = 9;
+                nameTMP.alignment = TextAlignmentOptions.Center;
+                nameTMP.color = Color.white;
+                nameTMP.fontStyle = FontStyles.Bold;
+                nameTMP.text = card.cardName;
+
+                // ATK
+                GameObject atkGo = new GameObject("ATK");
+                atkGo.transform.SetParent(go.transform, false);
+                var atkRT = atkGo.AddComponent<RectTransform>();
+                atkRT.anchorMin = new Vector2(0f, 0.15f);
+                atkRT.anchorMax = new Vector2(0.5f, 0.3f);
+                atkRT.offsetMin = Vector2.zero;
+                atkRT.offsetMax = Vector2.zero;
+                var atkTMP = atkGo.AddComponent<TextMeshProUGUI>();
+                atkTMP.fontSize = 9;
+                atkTMP.alignment = TextAlignmentOptions.Center;
+                atkTMP.color = Color.white;
+                atkTMP.text = $"ATK {card.attackPower}";
+
+                // DEF
+                GameObject defGo = new GameObject("DEF");
+                defGo.transform.SetParent(go.transform, false);
+                var defRT = defGo.AddComponent<RectTransform>();
+                defRT.anchorMin = new Vector2(0.5f, 0.15f);
+                defRT.anchorMax = new Vector2(1f, 0.3f);
+                defRT.offsetMin = Vector2.zero;
+                defRT.offsetMax = Vector2.zero;
+                var defTMP = defGo.AddComponent<TextMeshProUGUI>();
+                defTMP.fontSize = 9;
+                defTMP.alignment = TextAlignmentOptions.Center;
+                defTMP.color = Color.white;
+                defTMP.text = $"DEF {card.defensePower}";
+
+                // Cost
+                GameObject costGo = new GameObject("Cost");
+                costGo.transform.SetParent(go.transform, false);
+                var costRT = costGo.AddComponent<RectTransform>();
+                costRT.anchorMin = new Vector2(0.65f, 0f);
+                costRT.anchorMax = new Vector2(1f, 0.18f);
+                costRT.offsetMin = Vector2.zero;
+                costRT.offsetMax = Vector2.zero;
+                var costTMP = costGo.AddComponent<TextMeshProUGUI>();
+                costTMP.fontSize = 10;
+                costTMP.alignment = TextAlignmentOptions.Center;
+                costTMP.color = Color.white;
+                costTMP.fontStyle = FontStyles.Bold;
+                costTMP.text = $"Cost {card.energyCost}";
+
+                // ── Crear CardSlotUI y asignar componentes ──
+                CardSlotUI slot = go.AddComponent<CardSlotUI>();
+                slot.cardBackground = bgImage;
+                slot.cardArtImage = artImage;
+                slot.placeholderImage = phImage;
+                slot.cardNameLabel = nameTMP;
+                slot.atkLabel = atkTMP;
+                slot.defLabel = defTMP;
+                slot.costLabel = costTMP;
+
+                // ── Setup sin BuildUIIfNeeded ──
+                slot.SetupDirect(card, pd, OnCardClicked);
+                _handSlots.Add(slot);
+                
+                Debug.Log($"  ✓ Slot creado: {card.cardName}");
             }
         }
 

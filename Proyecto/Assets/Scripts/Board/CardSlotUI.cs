@@ -50,26 +50,28 @@ namespace ReinosDelEter
             Render();
         }
 
+        /// <summary>
+        /// Setup directo sin BuildUIIfNeeded (para cuando ya está todo construido en código).
+        /// </summary>
+        public void SetupDirect(CardData card, PlayerData owner, Action<CardData, PlayerData> onClick)
+        {
+            _card = card;
+            _owner = owner;
+            _onClick = onClick;
+            _baseScale = transform.localScale;
+
+            Render();
+        }
+
         private void Render()
         {
-            if (_card == null) return;
+            if (_card == null) 
+            {
+                Debug.LogWarning("[CardSlot] Card is null, cannot render");
+                return;
+            }
 
-            // Arte o placeholder
-            if (_card.HasArt)
-            {
-                if (cardArtImage != null) { cardArtImage.sprite = _card.cardArt; cardArtImage.gameObject.SetActive(true); }
-                if (placeholderImage != null) placeholderImage.gameObject.SetActive(false);
-            }
-            else
-            {
-                if (placeholderImage != null)
-                {
-                    placeholderImage.gameObject.SetActive(true);
-                    var hud = UnityEngine.Object.FindFirstObjectByType<HUDController>();
-                    placeholderImage.texture = hud != null ? hud.GetCardTexture(_card) : null;
-                }
-                if (cardArtImage != null) cardArtImage.gameObject.SetActive(false);
-            }
+            Debug.Log($"[CardSlot] Rendering: {_card.cardName}, HasArt: {_card.HasArt}");
 
             // Fondo con color del elemento
             if (cardBackground != null)
@@ -77,12 +79,39 @@ namespace ReinosDelEter
                 Color bg = _card.PlaceholderColor * 0.6f;
                 bg.a = 0.9f;
                 cardBackground.color = bg;
+                cardBackground.enabled = true;
             }
 
+            // Arte o placeholder
+            if (_card.HasArt && _card.cardArt != null)
+            {
+                if (cardArtImage != null)
+                { 
+                    cardArtImage.sprite = _card.cardArt;
+                    cardArtImage.gameObject.SetActive(true);
+                    cardArtImage.enabled = true;
+                    Debug.Log($"  ✓ Sprite asignado: {_card.cardArt.name}");
+                }
+                if (placeholderImage != null) placeholderImage.gameObject.SetActive(false);
+            }
+            else
+            {
+                // Sin arte = mostrar placeholder de color
+                if (placeholderImage != null)
+                {
+                    placeholderImage.gameObject.SetActive(true);
+                    var hud = UnityEngine.Object.FindFirstObjectByType<HUDController>();
+                    placeholderImage.texture = hud != null ? hud.GetCardTexture(_card) : null;
+                }
+                if (cardArtImage != null) cardArtImage.gameObject.SetActive(false);
+                Debug.Log($"  ⊘ Sin sprite, usando placeholder");
+            }
+
+            // Labels de texto
             if (cardNameLabel != null) cardNameLabel.text = _card.cardName;
-            if (atkLabel != null) atkLabel.text = $"⚔ {_card.attackPower}";
-            if (defLabel != null) defLabel.text = $"🛡 {_card.defensePower}";
-            if (costLabel != null) costLabel.text = $"⚡{_card.energyCost}";
+            if (atkLabel != null) atkLabel.text = $"ATK {_card.attackPower}";
+            if (defLabel != null) defLabel.text = $"DEF {_card.defensePower}";
+            if (costLabel != null) costLabel.text = $"Cost {_card.energyCost}";
         }
 
         // ── Hover / Click ─────────────────────────────────────────────────────
