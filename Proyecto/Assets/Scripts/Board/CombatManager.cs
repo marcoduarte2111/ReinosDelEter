@@ -67,18 +67,37 @@ namespace ReinosDelEter
                 _defCard = card;
                 _defSelected = true;
                 GameManager.Instance?.Log($"{owner.playerName} juega: {card.cardName}");
+                
+                // Mostrar carta en el panel de combate
+                HUDController hud = UnityEngine.Object.FindFirstObjectByType<HUDController>();
+                hud?.DisplayCombatCard(_defCard, owner, false);
+                
+                // Remover carta de la mano temporalmente (se remueve definitivamente al terminar combate)
+                hud?.RemoveCardFromHandDisplay(owner, _defCard);
                 return;
             }
 
             if (_attackers != null)
-                foreach (Piece a in _attackers)
-                    if (owner.index == a.playerIndex && _atkCards.Count <= _attackers.IndexOf(a))
+            {
+                for (int i = 0; i < _attackers.Count; i++)
+                {
+                    Piece a = _attackers[i];
+                    if (owner.index == a.playerIndex && _atkCards.Count == i)
                     {
                         _atkCards.Add(card);
                         _atkSelected++;
                         GameManager.Instance?.Log($"{owner.playerName} juega: {card.cardName}");
+                        
+                        // Mostrar carta en el panel de combate
+                        HUDController hud = UnityEngine.Object.FindFirstObjectByType<HUDController>();
+                        hud?.DisplayCombatCard(card, owner, true);
+                        
+                        // Remover carta de la mano temporalmente
+                        hud?.RemoveCardFromHandDisplay(owner, card);
                         return;
                     }
+                }
+            }
         }
 
         // ── Combat coroutine ─────────────────────────────────────────────────
@@ -86,36 +105,38 @@ namespace ReinosDelEter
         private IEnumerator CombatCoroutine()
         {
             GameManager gm = GameManager.Instance;
+            HUDController hud = UnityEngine.Object.FindFirstObjectByType<HUDController>();
 
-            // ── Fase 1: selección de cartas con timeout ───────────────────────
-            float elapsed = 0f;
-            int needed = _attackers.Count + 1; // todos los atacantes + defensor
+            // ── Mostrar panel de combate ──────────────────────────────────────
+            PlayerData atkPD = gm.Players[_attackers[0].playerIndex];
+            PlayerData defPD = gm.Players[_defender.playerIndex];
+            hud?.ShowCombatPanel(atkPD, defPD);
+            yield return new WaitForSeconds(0.5f);
 
-            while ((_atkSelected < _attackers.Count || !_defSelected) && elapsed < cardSelectTimeout)
+            // ── Fase 1: cada atacante elige su carta manualmente ──────────────
+            for (int i = 0; i < _attackers.Count; i++)
             {
-                elapsed += Time.deltaTime;
-                yield return null;
+                if (i < _atkCards.Count) continue; // ya seleccionó
+                var pd = gm.Players[_attackers[i].playerIndex];
+                hud?.ShowCardSelectionForPlayer(pd, "ATACANTE");
+                // Esperar hasta que el jugador haga click en una carta
+                while (_atkCards.Count <= i) yield return null;
+                hud?.HideCardSelection();
+                yield return new WaitForSeconds(0.3f);
             }
 
-            // Auto-selección para quien no eligió
-            foreach (Piece a in _attackers)
-            {
-                int idx = _attackers.IndexOf(a);
-                if (idx >= _atkCards.Count)
-                {
-                    var pd = gm.Players[a.playerIndex];
-                    _atkCards.Add(BestCard(pd));
-                }
-            }
+            // ── Fase 2: defensor elige su carta manualmente ───────────────────
             if (!_defSelected)
             {
-                var defPD = gm.Players[_defender.playerIndex];
-                _defCard = BestCard(defPD);
+                hud?.ShowCardSelectionForPlayer(defPD, "DEFENSOR");
+                while (!_defSelected) yield return null;
+                hud?.HideCardSelection();
+                yield return new WaitForSeconds(0.3f);
             }
 
             // ── Fase 2: animación ─────────────────────────────────────────────
-            var hud = UnityEngine.Object.FindFirstObjectByType<HUDController>();
             yield return StartCoroutine(PlayCombatAnimation(hud));
+            yield return new WaitForSeconds(0.5f);
 
             // ── Fase 3: cálculo ───────────────────────────────────────────────
             float atkTotal = 0f;
@@ -176,9 +197,9 @@ namespace ReinosDelEter
             }
             if (_defCard != null)
             {
-                var defPD = gm.Players[_defender.playerIndex];
-                defPD.SpendEnergy(_defCard);
-                defPD.RemoveCard(_defCard);
+                var defenderPD = gm.Players[_defender.playerIndex];
+                defenderPD.SpendEnergy(_defCard);
+                defenderPD.RemoveCard(_defCard);
             }
 
             yield return new WaitForSeconds(0.4f);

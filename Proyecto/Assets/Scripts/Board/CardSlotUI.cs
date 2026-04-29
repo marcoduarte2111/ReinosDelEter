@@ -38,6 +38,10 @@ namespace ReinosDelEter
         private Action<CardData, PlayerData> _onClick;
         private Vector3 _baseScale;
 
+        // Public accessors
+        public CardData Card => _card;
+        public PlayerData Owner => _owner;
+
         // ── Setup ─────────────────────────────────────────────────────────────
         public void Setup(CardData card, PlayerData owner, Action<CardData, PlayerData> onClick)
         {

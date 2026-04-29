@@ -47,7 +47,14 @@ namespace ReinosDelEter
         public RawImage attackerCardDisplay;
         public RawImage defenderCardDisplay;
         public TextMeshProUGUI combatResultLabel;
+        public TextMeshProUGUI attackerCardLabel;   // Nombre + ATK/DEF de la carta atacante
+        public TextMeshProUGUI defenderCardLabel;   // Nombre + ATK/DEF de la carta defensora
         public Animator combatAnimator;     // opcional
+
+        // Tira de selección de cartas dentro del CombatPanel (se crea en runtime)
+        private GameObject _selectionStripGo;
+        private RectTransform _selectionStripContent;
+        private TextMeshProUGUI _selectionPromptLabel;
 
         [Header("Mano de cartas (BottomBar)")]
         public Transform handContainer;      // HorizontalLayoutGroup
@@ -197,22 +204,413 @@ namespace ReinosDelEter
             if (combatPanel == null) return;
             combatPanel.SetActive(true);
 
-            // Muestra cartas placeholder de cada jugador
-            if (attackerCardDisplay != null)
-                attackerCardDisplay.texture = GetCardTexture(attacker.hand.Count > 0 ? attacker.hand[0] : null);
-            if (defenderCardDisplay != null)
-                defenderCardDisplay.texture = GetCardTexture(defender.hand.Count > 0 ? defender.hand[0] : null);
+            // Asegurar que se dibuja encima de todo el HUD
+            combatPanel.transform.SetAsLastSibling();
+
+            // Forzar que el panel cubra toda la pantalla (tapa el HUD detrás)
+            var rt = combatPanel.GetComponent<RectTransform>();
+            if (rt != null)
+            {
+                rt.anchorMin = Vector2.zero;
+                rt.anchorMax = Vector2.one;
+                rt.offsetMin = Vector2.zero;
+                rt.offsetMax = Vector2.zero;
+                rt.pivot = new Vector2(0.5f, 0.5f);
+                rt.localScale = Vector3.one;
+            }
+
+            // Hacer el fondo del panel completamente opaco para que no se vea lo de atrás
+            var bg = combatPanel.GetComponent<Image>();
+            if (bg == null) bg = combatPanel.AddComponent<Image>();
+            bg.color = new Color(0.04f, 0.02f, 0.08f, 1f);
+            bg.raycastTarget = true; // bloquea clicks al HUD de atrás
+
+            // Garantizar que existan los hijos (cartas, labels, VS)
+            EnsureCombatDisplayRefs();
 
             if (combatResultLabel != null)
                 combatResultLabel.text = $"{attacker.playerName}  VS  {defender.playerName}";
 
+            // Limpiar labels y texturas previas
+            if (attackerCardLabel != null) attackerCardLabel.text = "<i>Esperando carta...</i>";
+            if (defenderCardLabel != null) defenderCardLabel.text = "<i>Esperando carta...</i>";
+            if (attackerCardDisplay != null) attackerCardDisplay.texture = null;
+            if (defenderCardDisplay != null) defenderCardDisplay.texture = null;
+
             if (combatAnimator != null)
                 combatAnimator.SetTrigger("StartCombat");
+            
+            Debug.Log($"[HUD] Panel de combate mostrado: {attacker.playerName} vs {defender.playerName}");
+        }
+
+        public void DisplayCombatCard(CardData card, PlayerData owner, bool isAttacker)
+        {
+            if (card == null) return;
+
+            // Asegurar que el panel esté visible
+            if (combatPanel == null)
+            {
+                Debug.LogWarning("[HUD] combatPanel es NULL - no se puede mostrar carta");
+                return;
+            }
+            if (!combatPanel.activeInHierarchy) combatPanel.SetActive(true);
+
+            // Auto-reparar referencias si fueron creadas a mano y faltan
+            EnsureCombatDisplayRefs();
+
+            RawImage targetDisplay = isAttacker ? attackerCardDisplay : defenderCardDisplay;
+            TextMeshProUGUI targetLabel = isAttacker ? attackerCardLabel : defenderCardLabel;
+
+            // Mostrar imagen real de la carta (sprite -> texture, o placeholder)
+            if (targetDisplay != null)
+            {
+                Texture tex = null;
+                if (card.HasArt && card.cardArt != null && card.cardArt.texture != null)
+                {
+                    tex = card.cardArt.texture;
+                }
+                else
+                {
+                    tex = GetCardTexture(card);
+                }
+
+                targetDisplay.texture = tex;
+                targetDisplay.color = Color.white;            // por si quedó oscurecido
+                targetDisplay.enabled = true;
+                targetDisplay.gameObject.SetActive(true);
+                Debug.Log($"[HUD] Imagen mostrada en combate: {card.cardName} | tex={(tex != null ? tex.name : "null")} | display={targetDisplay.name}");
+            }
+            else
+            {
+                Debug.LogWarning($"[HUD] {(isAttacker ? "attackerCardDisplay" : "defenderCardDisplay")} es NULL");
+            }
+
+            // Mostrar nombre + ATK/DEF reales
+            if (targetLabel != null)
+            {
+                string ownerName = owner != null ? owner.playerName : "";
+                targetLabel.text = $"<b>{card.cardName}</b>\n" +
+                                   $"<color=#ffb347>ATK {card.attackPower}</color>  " +
+                                   $"<color=#7fbfff>DEF {card.defensePower}</color>\n" +
+                                   $"<size=70%><i>{ownerName} - {card.element}</i></size>";
+                targetLabel.enabled = true;
+                targetLabel.gameObject.SetActive(true);
+            }
+        }
+
+        /// <summary>
+        /// Auto-repara referencias del panel de combate si fueron creadas a mano y no asignadas.
+        /// Busca por nombre dentro de combatPanel. Si no existen los hijos, los crea.
+        /// </summary>
+        private void EnsureCombatDisplayRefs()
+        {
+            if (combatPanel == null) return;
+
+            if (attackerCardDisplay == null)
+                attackerCardDisplay = FindInChildren<RawImage>(combatPanel.transform, "AttackerCard_Image", "AttackerCard");
+            if (defenderCardDisplay == null)
+                defenderCardDisplay = FindInChildren<RawImage>(combatPanel.transform, "DefenderCard_Image", "DefenderCard");
+            if (attackerCardLabel == null)
+                attackerCardLabel = FindInChildren<TextMeshProUGUI>(combatPanel.transform, "AttackerLabel");
+            if (defenderCardLabel == null)
+                defenderCardLabel = FindInChildren<TextMeshProUGUI>(combatPanel.transform, "DefenderLabel");
+
+            // Si después de buscar todavía falta algo, reconstruir hijos en runtime
+            bool needsRebuild = attackerCardDisplay == null || defenderCardDisplay == null
+                                || attackerCardLabel == null || defenderCardLabel == null;
+            if (needsRebuild)
+            {
+                Debug.LogWarning("[HUD] CombatPanel sin hijos válidos. Reconstruyendo en runtime...");
+                BuildCombatPanelChildren();
+            }
+        }
+
+        /// <summary>
+        /// Destruye los hijos del CombatPanel y los reconstruye con la estructura correcta.
+        /// Usado cuando el panel existe pero no tiene los hijos esperados.
+        /// </summary>
+        private void BuildCombatPanelChildren()
+        {
+            if (combatPanel == null) return;
+
+            // Limpiar hijos previos
+            for (int i = combatPanel.transform.childCount - 1; i >= 0; i--)
+            {
+                var child = combatPanel.transform.GetChild(i).gameObject;
+#if UNITY_EDITOR
+                if (Application.isPlaying) Destroy(child); else DestroyImmediate(child);
+#else
+                Destroy(child);
+#endif
+            }
+
+            // Título
+            combatResultLabel = MakeAnchored<TextMeshProUGUI>("CombatResult",
+                new Vector2(0.1f, 0.85f), new Vector2(0.9f, 0.95f), combatPanel.transform);
+            combatResultLabel.text = "COMBATE";
+            combatResultLabel.fontSize = 36;
+            combatResultLabel.fontStyle = FontStyles.Bold;
+            combatResultLabel.alignment = TextAlignmentOptions.Center;
+            combatResultLabel.color = Color.white;
+
+            // Atacante: bg + RawImage child
+            var atkBgGo = MakeAnchoredGO("AttackerCard",
+                new Vector2(0.1f, 0.25f), new Vector2(0.42f, 0.78f), combatPanel.transform);
+            atkBgGo.AddComponent<Image>().color = new Color(0.2f, 0.3f, 0.5f, 1f);
+
+            var atkRawGo = MakeAnchoredGO("AttackerCard_Image",
+                new Vector2(0.05f, 0.05f), new Vector2(0.95f, 0.95f), atkBgGo.transform);
+            attackerCardDisplay = atkRawGo.AddComponent<RawImage>();
+            attackerCardDisplay.color = Color.white;
+            attackerCardDisplay.raycastTarget = false;
+
+            attackerCardLabel = MakeAnchored<TextMeshProUGUI>("AttackerLabel",
+                new Vector2(0.1f, 0.08f), new Vector2(0.42f, 0.24f), combatPanel.transform);
+            attackerCardLabel.text = "";
+            attackerCardLabel.fontSize = 20;
+            attackerCardLabel.alignment = TextAlignmentOptions.Center;
+            attackerCardLabel.color = Color.white;
+            attackerCardLabel.richText = true;
+
+            // VS
+            var vsLbl = MakeAnchored<TextMeshProUGUI>("VS",
+                new Vector2(0.42f, 0.4f), new Vector2(0.58f, 0.6f), combatPanel.transform);
+            vsLbl.text = "VS";
+            vsLbl.fontSize = 48;
+            vsLbl.fontStyle = FontStyles.Bold;
+            vsLbl.alignment = TextAlignmentOptions.Center;
+            vsLbl.color = new Color(1f, 0.6f, 0.1f, 1f);
+
+            // Defensor: bg + RawImage child
+            var defBgGo = MakeAnchoredGO("DefenderCard",
+                new Vector2(0.58f, 0.25f), new Vector2(0.9f, 0.78f), combatPanel.transform);
+            defBgGo.AddComponent<Image>().color = new Color(0.5f, 0.2f, 0.2f, 1f);
+
+            var defRawGo = MakeAnchoredGO("DefenderCard_Image",
+                new Vector2(0.05f, 0.05f), new Vector2(0.95f, 0.95f), defBgGo.transform);
+            defenderCardDisplay = defRawGo.AddComponent<RawImage>();
+            defenderCardDisplay.color = Color.white;
+            defenderCardDisplay.raycastTarget = false;
+
+            defenderCardLabel = MakeAnchored<TextMeshProUGUI>("DefenderLabel",
+                new Vector2(0.58f, 0.08f), new Vector2(0.9f, 0.24f), combatPanel.transform);
+            defenderCardLabel.text = "";
+            defenderCardLabel.fontSize = 20;
+            defenderCardLabel.alignment = TextAlignmentOptions.Center;
+            defenderCardLabel.color = Color.white;
+            defenderCardLabel.richText = true;
+
+            Debug.Log("[HUD] Hijos del CombatPanel reconstruidos correctamente.");
+        }
+
+        // ── Selección manual de carta dentro del CombatPanel ─────────────────
+
+        /// <summary>
+        /// Muestra la mano del jugador como botones clickeables dentro del CombatPanel.
+        /// Cuando el jugador clickea una carta, se notifica al CombatManager y se oculta la tira.
+        /// </summary>
+        public void ShowCardSelectionForPlayer(PlayerData player, string roleLabel)
+        {
+            if (combatPanel == null || player == null) return;
+            EnsureSelectionStrip();
+
+            _selectionPromptLabel.text =
+                $"<color=#ffd24a>{player.playerName}</color> ({roleLabel}) — elige una carta";
+
+            // Limpiar botones previos
+            for (int i = _selectionStripContent.childCount - 1; i >= 0; i--)
+            {
+                var child = _selectionStripContent.GetChild(i).gameObject;
+                if (Application.isPlaying) Destroy(child); else DestroyImmediate(child);
+            }
+
+            // Crear un botón por cada carta en la mano
+            if (player.hand == null || player.hand.Count == 0)
+            {
+                Debug.LogWarning($"[HUD] {player.playerName} no tiene cartas en la mano.");
+            }
+            else
+            {
+                foreach (var card in player.hand)
+                {
+                    if (card == null) continue;
+                    BuildSelectionCardButton(card, player);
+                }
+            }
+
+            _selectionStripGo.SetActive(true);
+            _selectionStripGo.transform.SetAsLastSibling();
+        }
+
+        /// <summary>Oculta la tira de selección.</summary>
+        public void HideCardSelection()
+        {
+            if (_selectionStripGo != null) _selectionStripGo.SetActive(false);
+        }
+
+        private void EnsureSelectionStrip()
+        {
+            if (_selectionStripGo != null && _selectionStripContent != null && _selectionPromptLabel != null)
+                return;
+
+            // Contenedor principal en la parte inferior del CombatPanel
+            _selectionStripGo = MakeAnchoredGO("SelectionStrip",
+                new Vector2(0f, 0f), new Vector2(1f, 0.22f), combatPanel.transform);
+            var bg = _selectionStripGo.AddComponent<Image>();
+            bg.color = new Color(0f, 0f, 0f, 0.6f);
+            bg.raycastTarget = true;
+
+            // Prompt
+            _selectionPromptLabel = MakeAnchored<TextMeshProUGUI>("Prompt",
+                new Vector2(0f, 0.78f), new Vector2(1f, 1f), _selectionStripGo.transform);
+            _selectionPromptLabel.text = "Elige una carta";
+            _selectionPromptLabel.fontSize = 18;
+            _selectionPromptLabel.alignment = TextAlignmentOptions.Center;
+            _selectionPromptLabel.color = Color.white;
+            _selectionPromptLabel.richText = true;
+
+            // Contenedor horizontal para los botones de carta
+            var contentGo = MakeAnchoredGO("Cards",
+                new Vector2(0.02f, 0.05f), new Vector2(0.98f, 0.75f), _selectionStripGo.transform);
+            _selectionStripContent = contentGo.GetComponent<RectTransform>();
+
+            var hLayout = contentGo.AddComponent<HorizontalLayoutGroup>();
+            hLayout.spacing = 8f;
+            hLayout.childAlignment = TextAnchor.MiddleCenter;
+            hLayout.childForceExpandWidth = false;
+            hLayout.childForceExpandHeight = true;
+            hLayout.childControlWidth = true;
+            hLayout.childControlHeight = true;
+        }
+
+        private void BuildSelectionCardButton(CardData card, PlayerData owner)
+        {
+            // Cada botón = LayoutElement + Image bg + Button + RawImage child + label child
+            var btnGo = new GameObject($"Sel_{card.cardName}");
+            btnGo.transform.SetParent(_selectionStripContent, false);
+            var rt = btnGo.AddComponent<RectTransform>();
+
+            var le = btnGo.AddComponent<LayoutElement>();
+            le.preferredWidth = 120f;
+            le.preferredHeight = 120f;
+            le.minWidth = 80f;
+
+            var bg = btnGo.AddComponent<Image>();
+            bg.color = new Color(0.15f, 0.15f, 0.2f, 1f);
+            bg.raycastTarget = true;
+
+            var btn = btnGo.AddComponent<Button>();
+            var colors = btn.colors;
+            colors.highlightedColor = new Color(1f, 0.85f, 0.4f, 1f);
+            colors.pressedColor = new Color(1f, 0.6f, 0.1f, 1f);
+            btn.colors = colors;
+
+            // RawImage child (textura de la carta)
+            var imgGo = MakeAnchoredGO("Img",
+                new Vector2(0.05f, 0.3f), new Vector2(0.95f, 0.95f), btnGo.transform);
+            var raw = imgGo.AddComponent<RawImage>();
+            raw.raycastTarget = false;
+            raw.texture = GetCardTexture(card);
+
+            // Label inferior con nombre + stats
+            var lbl = MakeAnchored<TextMeshProUGUI>("Lbl",
+                new Vector2(0.02f, 0.0f), new Vector2(0.98f, 0.28f), btnGo.transform);
+            lbl.text = $"<size=80%><b>{card.cardName}</b></size>\n" +
+                       $"<color=#ffb347>{card.attackPower}</color>/" +
+                       $"<color=#7fbfff>{card.defensePower}</color>";
+            lbl.fontSize = 14;
+            lbl.alignment = TextAlignmentOptions.Center;
+            lbl.color = Color.white;
+            lbl.richText = true;
+            lbl.raycastTarget = false;
+
+            // Capturar variables para el callback
+            CardData capturedCard = card;
+            PlayerData capturedOwner = owner;
+            btn.onClick.AddListener(() =>
+            {
+                var cm = UnityEngine.Object.FindFirstObjectByType<CombatManager>();
+                cm?.OnCardSelectedByPlayer(capturedCard, capturedOwner);
+                HideCardSelection();
+            });
+        }
+
+        private static T FindInChildren<T>(Transform root, params string[] names) where T : Component
+        {
+            // Buscar por nombre exacto primero
+            foreach (var n in names)
+            {
+                var t = FindByName(root, n);
+                if (t != null)
+                {
+                    var comp = t.GetComponent<T>();
+                    if (comp != null) return comp;
+                }
+            }
+            // Fallback: primer componente del tipo
+            return root.GetComponentInChildren<T>(true);
+        }
+
+        private static Transform FindByName(Transform root, string name)
+        {
+            if (root.name == name) return root;
+            for (int i = 0; i < root.childCount; i++)
+            {
+                var found = FindByName(root.GetChild(i), name);
+                if (found != null) return found;
+            }
+            return null;
+        }
+
+        public void RemoveCardFromHandDisplay(PlayerData player, CardData card)
+        {
+            if (_handSlots == null) return;
+
+            foreach (var slot in _handSlots)
+            {
+                if (slot != null && slot.Owner == player && slot.Card == card)
+                {
+                    var image = slot.GetComponent<Image>();
+                    if (image != null) image.color = new Color(0.5f, 0.5f, 0.5f, 0.5f);
+
+                    var rawImg = slot.GetComponent<RawImage>();
+                    if (rawImg != null) rawImg.color = new Color(0.5f, 0.5f, 0.5f, 0.5f);
+
+                    Debug.Log($"[HUD] Carta ocultada en mano: {card.cardName}");
+                    return;
+                }
+            }
+        }
+
+        public void RestoreCardInHandDisplay(PlayerData player, CardData card)
+        {
+            if (_handSlots == null) return;
+
+            foreach (var slot in _handSlots)
+            {
+                if (slot != null && slot.Owner == player && slot.Card == card)
+                {
+                    var image = slot.GetComponent<Image>();
+                    if (image != null) image.color = Color.white;
+
+                    var rawImg = slot.GetComponent<RawImage>();
+                    if (rawImg != null) rawImg.color = Color.white;
+
+                    Debug.Log($"[HUD] Carta restaurada en mano: {card.cardName}");
+                    return;
+                }
+            }
         }
 
         public void HideCombatPanel()
         {
             if (combatPanel != null) combatPanel.SetActive(false);
+
+            // Limpiar labels y texturas para próximo combate
+            if (attackerCardLabel != null) attackerCardLabel.text = "";
+            if (defenderCardLabel != null) defenderCardLabel.text = "";
+            if (attackerCardDisplay != null) attackerCardDisplay.texture = null;
+            if (defenderCardDisplay != null) defenderCardDisplay.texture = null;
         }
 
         public void AddToLog(string msg)
@@ -557,43 +955,70 @@ namespace ReinosDelEter
             handLbl.color = new Color(0.6f, 0.6f, 0.7f, 1f);
             handContainer = handGo.transform;
 
-            // ── Combat panel (center screen) ─────────────────────────────────
+            // ── Combat panel (FULL SCREEN para tapar el resto del HUD) ───────
             var cpGo = MakeAnchoredGO("CombatPanel",
-                new Vector2(0.2f, 0.2f), new Vector2(0.8f, 0.85f));
-            cpGo.AddComponent<Image>().color = new Color(0.06f, 0.04f, 0.1f, 0.95f);
+                Vector2.zero, Vector2.one);
+            cpGo.AddComponent<Image>().color = new Color(0.04f, 0.02f, 0.08f, 0.97f);
             combatPanel = cpGo;
             combatPanel.SetActive(false);
 
-            // VS label
+            // VS label (título arriba)
             combatResultLabel = MakeAnchored<TextMeshProUGUI>("CombatResult",
-                new Vector2(0f, 0.8f), new Vector2(1f, 1f), cpGo.transform);
+                new Vector2(0.1f, 0.85f), new Vector2(0.9f, 0.95f), cpGo.transform);
             combatResultLabel.text = "COMBATE";
-            combatResultLabel.fontSize = 28;
+            combatResultLabel.fontSize = 36;
+            combatResultLabel.fontStyle = FontStyles.Bold;
             combatResultLabel.alignment = TextAlignmentOptions.Center;
             combatResultLabel.color = Color.white;
 
-            // Attacker card (left)
-            var atkGo = MakeAnchoredGO("AttackerCard",
-                new Vector2(0.05f, 0.1f), new Vector2(0.42f, 0.78f), cpGo.transform);
-            atkGo.AddComponent<Image>().color = new Color(0.2f, 0.3f, 0.5f, 1f);
-            attackerCardDisplay = atkGo.AddComponent<RawImage>();
+            // Attacker card (left) — Image fondo + RawImage child para textura
+            var atkBgGo = MakeAnchoredGO("AttackerCard",
+                new Vector2(0.1f, 0.25f), new Vector2(0.42f, 0.78f), cpGo.transform);
+            atkBgGo.AddComponent<Image>().color = new Color(0.2f, 0.3f, 0.5f, 1f);
+
+            var atkRawGo = MakeAnchoredGO("AttackerCard_Image",
+                new Vector2(0.05f, 0.05f), new Vector2(0.95f, 0.95f), atkBgGo.transform);
+            attackerCardDisplay = atkRawGo.AddComponent<RawImage>();
             attackerCardDisplay.color = Color.white;
+            attackerCardDisplay.raycastTarget = false;
+
+            // Attacker label (debajo de la imagen)
+            attackerCardLabel = MakeAnchored<TextMeshProUGUI>("AttackerLabel",
+                new Vector2(0.1f, 0.08f), new Vector2(0.42f, 0.24f), cpGo.transform);
+            attackerCardLabel.text = "";
+            attackerCardLabel.fontSize = 20;
+            attackerCardLabel.alignment = TextAlignmentOptions.Center;
+            attackerCardLabel.color = Color.white;
+            attackerCardLabel.richText = true;
 
             // VS divider
             var vsLbl = MakeAnchored<TextMeshProUGUI>("VS",
-                new Vector2(0.42f, 0.35f), new Vector2(0.58f, 0.65f), cpGo.transform);
+                new Vector2(0.42f, 0.4f), new Vector2(0.58f, 0.6f), cpGo.transform);
             vsLbl.text = "VS";
-            vsLbl.fontSize = 32;
+            vsLbl.fontSize = 48;
             vsLbl.fontStyle = FontStyles.Bold;
             vsLbl.alignment = TextAlignmentOptions.Center;
             vsLbl.color = new Color(1f, 0.6f, 0.1f, 1f);
 
-            // Defender card (right)
-            var defGo = MakeAnchoredGO("DefenderCard",
-                new Vector2(0.58f, 0.1f), new Vector2(0.95f, 0.78f), cpGo.transform);
-            defGo.AddComponent<Image>().color = new Color(0.5f, 0.2f, 0.2f, 1f);
-            defenderCardDisplay = defGo.AddComponent<RawImage>();
+            // Defender card (right) — Image fondo + RawImage child para textura
+            var defBgGo = MakeAnchoredGO("DefenderCard",
+                new Vector2(0.58f, 0.25f), new Vector2(0.9f, 0.78f), cpGo.transform);
+            defBgGo.AddComponent<Image>().color = new Color(0.5f, 0.2f, 0.2f, 1f);
+
+            var defRawGo = MakeAnchoredGO("DefenderCard_Image",
+                new Vector2(0.05f, 0.05f), new Vector2(0.95f, 0.95f), defBgGo.transform);
+            defenderCardDisplay = defRawGo.AddComponent<RawImage>();
             defenderCardDisplay.color = Color.white;
+            defenderCardDisplay.raycastTarget = false;
+
+            // Defender label (debajo de la imagen)
+            defenderCardLabel = MakeAnchored<TextMeshProUGUI>("DefenderLabel",
+                new Vector2(0.58f, 0.08f), new Vector2(0.9f, 0.24f), cpGo.transform);
+            defenderCardLabel.text = "";
+            defenderCardLabel.fontSize = 20;
+            defenderCardLabel.alignment = TextAlignmentOptions.Center;
+            defenderCardLabel.color = Color.white;
+            defenderCardLabel.richText = true;
 
             Debug.Log("[HUDController] HUD generado con anchors. Listo.");
         }
