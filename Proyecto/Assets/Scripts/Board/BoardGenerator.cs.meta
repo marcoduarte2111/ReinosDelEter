@@ -1,2 +1,16 @@
 fileFormatVersion: 2
 guid: 05e739480245b9c42a6730caacf78e40
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences:
+  - fireTilePrefab: {fileID: 936256431047548326, guid: 5df9b7f04789c2e428381bde37d3b2fb, type: 3}
+  - waterTilePrefab: {fileID: 2909656176717407270, guid: 4fd5ba05cbe90c0438925eeb9adb0cd8, type: 3}
+  - earthTilePrefab: {fileID: 1230001098958027405, guid: 4891e4cae54901a4b84849c165f56dfd, type: 3}
+  - airTilePrefab: {fileID: 6393752435816105997, guid: 92e06bd5dc1b75f4e924e2a9264bef74, type: 3}
+  - midTilePrefab: {fileID: 1566027587696187749, guid: 4500dcc302015eb41a0a235f771b0442, type: 3}
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
