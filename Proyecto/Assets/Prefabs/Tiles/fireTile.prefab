@@ -50,10 +50,38 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 919132149155446097, guid: 4c79ed2a87db6dd4b8b12dc8ae98db7e, type: 3}
       propertyPath: m_Name
-      value: fireTile 1
+      value: fireTile
       objectReference: {fileID: 0}
     m_RemovedComponents: []
     m_RemovedGameObjects: []
     m_AddedGameObjects: []
-    m_AddedComponents: []
+    m_AddedComponents:
+    - targetCorrespondingSourceObject: {fileID: 919132149155446097, guid: 4c79ed2a87db6dd4b8b12dc8ae98db7e, type: 3}
+      insertIndex: -1
+      addedObject: {fileID: -9087967408882256202}
   m_SourcePrefab: {fileID: 100100000, guid: 4c79ed2a87db6dd4b8b12dc8ae98db7e, type: 3}
+--- !u!1 &936256431047548326 stripped
+GameObject:
+  m_CorrespondingSourceObject: {fileID: 919132149155446097, guid: 4c79ed2a87db6dd4b8b12dc8ae98db7e, type: 3}
+  m_PrefabInstance: {fileID: 17778633046139127}
+  m_PrefabAsset: {fileID: 0}
+--- !u!114 &-9087967408882256202
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 936256431047548326}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 3f6eae36d7bae0044b0bed735ca37d60, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::ReinosDelEter.Tile
+  tileIndex: 0
+  element: 0
+  tileType: 0
+  pathIndex: 0
+  positionOnPath: 0
+  neighbors: []
+  ownedByPlayer: -1
+  tileRenderer: {fileID: 0}

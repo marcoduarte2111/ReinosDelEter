@@ -15,7 +15,7 @@ namespace ReinosDelEter
         public int pathIndex;
         public int positionOnPath;
 
-        [Header("Graph — vecinos directos")]
+        [Header("Graph")]
         public List<Tile> neighbors = new();
 
         [Header("Conquest")]
@@ -26,7 +26,6 @@ namespace ReinosDelEter
         [Header("Visuals")]
         public Renderer tileRenderer;
 
-        // Kept for legacy compatibility — not used for navigation anymore
         public Tile nextTile { get; set; }
         public Tile previousTile { get; set; }
         public Tile[] connectedTiles { get; set; }
@@ -40,11 +39,16 @@ namespace ReinosDelEter
             new Color(0.5f,  0.2f,  0.9f)
         };
 
-        private Material _mat;
+        private Material _originalMat;
+        private Material _instanceMat;
 
         private void Awake()
         {
-            tileRenderer = GetComponent<Renderer>();
+            tileRenderer = GetComponentInChildren<Renderer>();
+            if (tileRenderer == null)
+                tileRenderer = GetComponent<Renderer>();
+            if (tileRenderer != null)
+                _originalMat = tileRenderer.sharedMaterial;
         }
 
         public void AddNeighbor(Tile t)
@@ -55,69 +59,74 @@ namespace ReinosDelEter
 
         public void ApplyElementVisuals()
         {
-            if (tileRenderer == null) tileRenderer = GetComponent<Renderer>();
             if (tileRenderer == null) return;
+            EnsureInstanceMat();
             Color col = ElementColors[(int)element];
-            _mat = new Material(tileRenderer.sharedMaterial != null
-                   ? tileRenderer.sharedMaterial : tileRenderer.material);
-            _mat.color = col;
-            _mat.EnableKeyword("_EMISSION");
-            _mat.SetColor("_EmissionColor", col * 0.3f);
-            tileRenderer.material = _mat;
+            _instanceMat.color = col;
+            if (_instanceMat.HasProperty("_EmissionColor"))
+            {
+                _instanceMat.EnableKeyword("_EMISSION");
+                _instanceMat.SetColor("_EmissionColor", col * 0.3f);
+            }
         }
 
         public void SetHighlight(bool active)
         {
             if (tileRenderer == null) return;
-            if (_mat == null) _mat = tileRenderer.material;
-            _mat.EnableKeyword("_EMISSION");
             if (active)
             {
-                _mat.color = Color.yellow;
-                _mat.SetColor("_EmissionColor", Color.yellow * 2f);
+                EnsureInstanceMat();
+                if (_instanceMat.HasProperty("_EmissionColor"))
+                {
+                    _instanceMat.EnableKeyword("_EMISSION");
+                    _instanceMat.SetColor("_EmissionColor", Color.yellow * 2f);
+                }
+                _instanceMat.color = Color.Lerp(_instanceMat.color, Color.yellow, 0.45f);
             }
             else
             {
-                Color col = ElementColors[(int)element];
-                _mat.color = col;
-                _mat.SetColor("_EmissionColor", col * 0.3f);
+                RestoreOriginalMaterial();
             }
         }
 
-        public void PlayLandEffect() => StartCoroutine(LandPulse());
-
-        private System.Collections.IEnumerator LandPulse()
-        {
-            if (tileRenderer == null) yield break;
-            if (_mat == null) _mat = tileRenderer.material;
-            Color col = ElementColors[(int)element];
-            Color baseEmit = col * 0.3f;
-            Color peak = Color.white * 1.5f;
-            _mat.EnableKeyword("_EMISSION");
-            for (float t = 0f; t < 0.3f; t += Time.deltaTime)
-            {
-                float n = t < 0.15f ? t / 0.15f : (0.3f - t) / 0.15f;
-                _mat.SetColor("_EmissionColor", Color.Lerp(baseEmit, peak, n));
-                yield return null;
-            }
-            _mat.SetColor("_EmissionColor", baseEmit);
-        }
+        public void PlayLandEffect() { }
 
         public void Conquer(int playerIndex, Color playerColor)
         {
             ownedByPlayer = playerIndex;
-            if (_mat == null && tileRenderer != null) _mat = tileRenderer.material;
-            if (_mat == null) return;
-            Color col = Color.Lerp(ElementColors[(int)element], playerColor, 0.55f);
-            _mat.color = col;
-            _mat.EnableKeyword("_EMISSION");
-            _mat.SetColor("_EmissionColor", playerColor * 0.7f);
+            EnsureInstanceMat();
+            Color base_ = _originalMat != null ? _originalMat.color : Color.white;
+            _instanceMat.color = Color.Lerp(base_, playerColor, 0.45f);
+            if (_instanceMat.HasProperty("_EmissionColor"))
+            {
+                _instanceMat.EnableKeyword("_EMISSION");
+                _instanceMat.SetColor("_EmissionColor", playerColor * 0.5f);
+            }
         }
 
         public void Free()
         {
             ownedByPlayer = -1;
-            ApplyElementVisuals();
+            RestoreOriginalMaterial();
+        }
+
+        private void EnsureInstanceMat()
+        {
+            if (tileRenderer == null) return;
+            if (_instanceMat == null)
+            {
+                Material source = _originalMat != null ? _originalMat : tileRenderer.sharedMaterial;
+                _instanceMat = new Material(source);
+                tileRenderer.material = _instanceMat;
+            }
+        }
+
+        private void RestoreOriginalMaterial()
+        {
+            if (tileRenderer == null) return;
+            if (_originalMat != null)
+                tileRenderer.material = _originalMat;
+            _instanceMat = null;
         }
     }
 }

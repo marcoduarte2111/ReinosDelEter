@@ -116,10 +116,10 @@ namespace ReinosDelEter
             Debug.Log($"[MOVE] {name} | tile={currentTile.name} | prev={prevTile?.name} | neighbors={currentTile.neighbors.Count} | forward={forward.Count} | steps={stepsLeft}");
             foreach (var f in forward) Debug.Log($"  -> {f.name}");
 
-            // Nunca avanzar automáticamente al castillo propio
+            // Nunca avanzar automáticamente al castillo del propio elemento
             forward.RemoveAll(t => t != null
                 && t.tileType == TileType.Start
-                && t.pathIndex == playerIndex);
+                && t.pathIndex == (int)element);
 
             // Desde el centro siempre pide dirección
             bool forceJunction = currentTile.tileType == TileType.Center;

@@ -4,17 +4,6 @@ using UnityEngine;
 
 namespace ReinosDelEter
 {
-    /// <summary>
-    /// GameManager — flujo de juego completo.
-    ///
-    /// TURNO:
-    ///   1. Lanzar dado → fichas del jugador brillan
-    ///   2. Click en ficha → vecinos se resaltan en amarillo
-    ///   3. Click en vecino amarillo → ficha avanza 1 paso
-    ///   4. Si llega a cruce (>1 vecino) con pasos restantes → vuelve al paso 2
-    ///   5. Si hay enemigo en la tile → combate (puede ser grupal)
-    ///   6. Si gana → continúa pasos restantes. Si pierde → turno termina.
-    /// </summary>
     public class GameManager : MonoBehaviour
     {
         public static GameManager Instance { get; private set; }
@@ -24,6 +13,7 @@ namespace ReinosDelEter
         public DeckManager deckManager;
         public HUDController hudController;
         public CombatManager combatManager;
+        public DiceRoller diceRoller;
 
         [Header("Prefab de ficha")]
         public GameObject piecePrefab;
@@ -63,6 +53,18 @@ namespace ReinosDelEter
         private void Start()
         {
             AutoFindComponents();
+
+            // Lee configuración del menú principal si existe
+            if (GameConfig.Instance != null)
+            {
+                playerNames = GameConfig.Instance.playerNames;
+                if (boardGenerator != null)
+                {
+                    boardGenerator.tilesPerArm = GameConfig.Instance.tilesPerArm;
+                    boardGenerator.ringTilesPerSide = GameConfig.Instance.ringTilesPerSide;
+                }
+            }
+
             if (boardGenerator == null) { Debug.LogError("[GM] No BoardGenerator."); return; }
             if (boardGenerator.startTiles == null) boardGenerator.GenerateBoard();
             if (boardGenerator.startTiles == null) { Debug.LogError("[GM] startTiles null."); return; }
@@ -105,7 +107,6 @@ namespace ReinosDelEter
 
         private void HandleDirectionClick(RaycastHit hit)
         {
-            // Click en tile resaltada
             Tile t = hit.collider.GetComponent<Tile>()
                   ?? hit.collider.GetComponentInParent<Tile>();
             if (t != null && _highlightedTiles.Contains(t))
@@ -114,7 +115,6 @@ namespace ReinosDelEter
                 return;
             }
 
-            // Click en otra ficha propia → cambia selección
             Piece p = hit.collider.GetComponent<Piece>()
                    ?? hit.collider.GetComponentInParent<Piece>();
             if (p != null && p.playerIndex == TurnIndex)
@@ -143,19 +143,14 @@ namespace ReinosDelEter
             foreach (Tile nb in piece.currentTile.neighbors)
             {
                 if (nb == null) continue;
-
-                // Excluye de donde vino
                 if (nb == cameFrom) continue;
 
-                // Desde el centro: excluye tiles que lleven de vuelta al brazo propio
-                // (el centro conecta a las 4 esquinas; excluimos la esquina del reino propio)
+                // Desde el centro: excluye solo el brazo del elemento propio
                 if (piece.currentTile.tileType == TileType.Center
-                    && nb.pathIndex == piece.playerIndex)
-                    continue;
+                    && nb.pathIndex == (int)piece.element) continue;
 
-                // Nunca mostrar el castillo propio como opción de movimiento automático
-                if (nb.tileType == TileType.Start && nb.pathIndex == piece.playerIndex)
-                    continue;
+                // Nunca mostrar el castillo del propio elemento como opción
+                if (nb.tileType == TileType.Start && nb.pathIndex == (int)piece.element) continue;
 
                 options.Add(nb);
             }
@@ -195,9 +190,6 @@ namespace ReinosDelEter
         private void OnArrived(Tile tile)
         {
             var enemies = GetEnemiesOn(tile, _activePiece.playerIndex);
-            Debug.Log($"[OnArrived] tile={tile?.name} activePiece={_activePiece?.name} enemies={enemies.Count}");
-            foreach (var e in enemies) Debug.Log($"  enemigo: {e.name} en {e.currentTile?.name}");
-
             if (enemies.Count > 0)
             {
                 _activePiece.stopMovement = true;
@@ -219,11 +211,9 @@ namespace ReinosDelEter
         private void OnJunction(Tile tile, int stepsLeft)
         {
             _stepsRemaining = stepsLeft;
-
             _activePiece.OnArrivedAtTile = null;
             _activePiece.OnMovementFinished = null;
             _activePiece.OnReachedJunction = null;
-
             _isProcessing = false;
             State = GameState.WaitingForDirection;
             ShowNeighborOptions(_activePiece);
@@ -235,11 +225,9 @@ namespace ReinosDelEter
         {
             yield return new WaitUntil(() => !attacker.isMoving);
 
-            // Reúne aliados en la misma tile
             var allies = GetAlliesOn(attacker.currentTile, attacker.playerIndex);
-            allies.Insert(0, attacker); // attacker es el primero
+            allies.Insert(0, attacker);
 
-            // Por cada ficha enemiga única en la tile, lanza combate grupal
             var defeatedEnemies = new HashSet<Piece>();
             bool attackerLost = false;
             int stepsAfter = Mathf.Max(0, _stepsRemaining - 1);
@@ -253,13 +241,11 @@ namespace ReinosDelEter
                     $"({allies.Count} fichas) vs {Players[enemy.playerIndex].playerName}");
 
                 bool attackerWon = false;
-                yield return StartCoroutine(RunGroupCombat(allies, enemy,
-                    won => attackerWon = won));
+                yield return StartCoroutine(RunGroupCombat(allies, enemy, won => attackerWon = won));
 
                 if (attackerWon)
                 {
                     defeatedEnemies.Add(enemy);
-                    // Ficha enemiga vuelve a su castillo
                     Tile home = boardGenerator.GetStartTileByElement(enemy.element);
                     if (home != null) enemy.PlaceOnTile(home);
                     Log($"{Players[enemy.playerIndex].playerName} vuelve a su castillo.");
@@ -267,7 +253,6 @@ namespace ReinosDelEter
                 else
                 {
                     attackerLost = true;
-                    // Ficha atacante vuelve a su castillo
                     Tile home = boardGenerator.GetStartTileByElement(attacker.element);
                     if (home != null) attacker.PlaceOnTile(home);
                     Log($"{Players[attacker.playerIndex].playerName} pierde y vuelve.");
@@ -276,7 +261,6 @@ namespace ReinosDelEter
 
             if (!attackerLost && stepsAfter > 0)
             {
-                // Ganó — continúa con pasos restantes
                 Log($"Continúa con {stepsAfter} paso(s).");
                 yield return new WaitForSeconds(0.3f);
                 _stepsRemaining = stepsAfter;
@@ -293,7 +277,7 @@ namespace ReinosDelEter
         }
 
         private IEnumerator RunGroupCombat(List<Piece> attackers, Piece defender,
-                                            System.Action<bool> onResult)
+                                           System.Action<bool> onResult)
         {
             State = GameState.Combat;
 
@@ -315,12 +299,10 @@ namespace ReinosDelEter
             }
             else
             {
-                // Fallback: suma ATK de todos los aliados vs 1 dado del defensor
                 yield return new WaitForSeconds(1.0f);
                 int atkTotal = 0;
                 foreach (var a in attackers) atkTotal += Random.Range(1, 7);
-                int defRoll = Random.Range(1, 7) * attackers.Count; // defensor escala
-
+                int defRoll = Random.Range(1, 7) * attackers.Count;
                 attackerWon = atkTotal >= defRoll;
 
                 int dmg = Random.Range(3, 8);
@@ -375,40 +357,24 @@ namespace ReinosDelEter
         {
             PlayerData pd = Players[piece.playerIndex];
             int prevOwner = castle.ownedByPlayer;
-
             castle.Conquer(piece.playerIndex, pd.ElementColor);
             pd.score += 25;
             Log($"[Castillo] {pd.playerName} conquisto un castillo! +25 pts");
             hudController?.UpdatePlayerStats(pd);
-
-            // Chequea si el dueño anterior fue eliminado (todos sus castillos tomados)
             if (prevOwner >= 0 && prevOwner != piece.playerIndex)
                 CheckElimination(prevOwner);
         }
 
         private void CheckElimination(int playerIndex)
         {
-            // Cuenta castillos que aún pertenecen a este jugador
             int ownedCastles = 0;
-            foreach (var pd in Players)
-                if (pd.index != playerIndex)
-                    foreach (var p in pd.pieces)
-                        if (p.currentTile != null
-                            && p.currentTile.IsCastle
-                            && p.currentTile.ownedByPlayer == playerIndex)
-                            ownedCastles++;
-
-            // También cuenta el castillo natal si aún no fue conquistado
             Tile home = boardGenerator.GetStartTileByElement(Players[playerIndex].element);
-            if (home != null && home.ownedByPlayer == playerIndex)
-                ownedCastles++;
-            if (home != null && home.ownedByPlayer == -1) // nunca fue conquistado = sigue siendo "suyo"
+            if (home != null && (home.ownedByPlayer == playerIndex || home.ownedByPlayer == -1))
                 ownedCastles++;
 
             if (ownedCastles == 0)
             {
                 Log($"[Eliminado] {Players[playerIndex].playerName} fue eliminado!");
-                // Devuelve todas sus fichas al castillo natal (que ya fue conquistado)
                 foreach (Piece p in Players[playerIndex].pieces)
                     p.gameObject.SetActive(false);
             }
@@ -443,15 +409,36 @@ namespace ReinosDelEter
         private IEnumerator RollDiceCoroutine()
         {
             _isProcessing = true;
-            for (float t = 0; t < 0.7f; t += 0.09f)
+
+            if (diceRoller != null)
             {
-                hudController?.ShowDiceRoll(Random.Range(diceMin, diceMax + 1));
-                yield return new WaitForSeconds(0.09f);
+                // Dado 3D físico
+                bool done = false;
+                diceRoller.onRollComplete = result =>
+                {
+                    _diceResult = result;
+                    _stepsRemaining = result;
+                    hudController?.ShowDiceRoll(result);
+                    Log($"Dado: {result}");
+                    done = true;
+                };
+                diceRoller.RollDice();
+                yield return new WaitUntil(() => done);
             }
-            _diceResult = Random.Range(diceMin, diceMax + 1);
-            _stepsRemaining = _diceResult;
-            hudController?.ShowDiceRoll(_diceResult);
-            Log($"Dado: {_diceResult}");
+            else
+            {
+                // Fallback numérico si no hay dado 3D
+                for (float t = 0; t < 0.7f; t += 0.09f)
+                {
+                    hudController?.ShowDiceRoll(Random.Range(diceMin, diceMax + 1));
+                    yield return new WaitForSeconds(0.09f);
+                }
+                _diceResult = Random.Range(diceMin, diceMax + 1);
+                _stepsRemaining = _diceResult;
+                hudController?.ShowDiceRoll(_diceResult);
+                Log($"Dado: {_diceResult}");
+            }
+
             _isProcessing = false;
             GlowCurrentPlayerPieces();
             State = GameState.WaitingForPieceSelect;
@@ -566,10 +553,7 @@ namespace ReinosDelEter
             {
                 if (pd.index == myPlayer) continue;
                 foreach (Piece p in pd.pieces)
-                {
-                    Debug.Log($"  [GetEnemiesOn] check {p.name} currentTile={p.currentTile?.name} vs tile={tile?.name}");
                     if (p.currentTile == tile) result.Add(p);
-                }
             }
             return result;
         }
@@ -589,6 +573,7 @@ namespace ReinosDelEter
             if (deckManager == null) deckManager = Object.FindFirstObjectByType<DeckManager>();
             if (hudController == null) hudController = Object.FindFirstObjectByType<HUDController>();
             if (combatManager == null) combatManager = Object.FindFirstObjectByType<CombatManager>();
+            if (diceRoller == null) diceRoller = Object.FindFirstObjectByType<DiceRoller>();
         }
 
         private T FindOrAdd<T>() where T : Component
