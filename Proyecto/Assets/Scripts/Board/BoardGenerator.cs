@@ -166,7 +166,9 @@ namespace ReinosDelEter
                 return null;
             }
 
-            GameObject go = Instantiate(prefab, position, Quaternion.identity, transform);
+            // Respetamos la rotación del prefab (las tiles llevan -90° en X para
+            // quedar planas). Con Quaternion.identity salían de pie.
+            GameObject go = Instantiate(prefab, position, prefab.transform.rotation, transform);
             go.transform.localScale = tileScale;
             go.name = tileType == TileType.Center
                 ? "Tile_Center"

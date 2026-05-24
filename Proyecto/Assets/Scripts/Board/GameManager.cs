@@ -230,7 +230,7 @@ namespace ReinosDelEter
 
             var defeatedEnemies = new HashSet<Piece>();
             bool attackerLost = false;
-            int stepsAfter = Mathf.Max(0, _stepsRemaining - 1);
+            int stepsAfter = Mathf.Max(0, attacker.StepsLeftAtStop);
 
             foreach (Piece enemy in enemies)
             {
@@ -264,9 +264,7 @@ namespace ReinosDelEter
                 Log($"Continúa con {stepsAfter} paso(s).");
                 yield return new WaitForSeconds(0.3f);
                 _stepsRemaining = stepsAfter;
-                _isProcessing = false;
-                State = GameState.WaitingForDirection;
-                ShowNeighborOptions(attacker);
+                ContinueAfterCombat(attacker, stepsAfter);
             }
             else
             {
@@ -274,6 +272,42 @@ namespace ReinosDelEter
                 _activePiece = null;
                 NextTurn();
             }
+        }
+
+        /// <summary>
+        /// Reanuda el avance tras ganar un combate. La ficha sigue en la MISMA
+        /// dirección de forma automática; solo se elige camino si quedó en el centro.
+        /// </summary>
+        private void ContinueAfterCombat(Piece piece, int steps)
+        {
+            // A partir de aquí la ficha sigue recta por el anillo; solo el centro
+            // abrirá elección de camino durante el resto de este movimiento.
+            piece.continueStraight = true;
+
+            // Solo el centro permite escoger dirección.
+            if (piece.currentTile != null && piece.currentTile.tileType == TileType.Center)
+            {
+                _isProcessing = false;
+                State = GameState.WaitingForDirection;
+                ShowNeighborOptions(piece);
+                return;
+            }
+
+            Tile forward = piece.GetForwardStep();
+            if (forward == null)
+            {
+                // Sin salida hacia adelante: cierra el movimiento aquí.
+                StartCoroutine(AfterMove(piece));
+                return;
+            }
+
+            State = GameState.Moving;
+            _isProcessing = true;
+            piece.stopMovement = false;
+            piece.OnArrivedAtTile = OnArrived;
+            piece.OnMovementFinished = OnFinished;
+            piece.OnReachedJunction = OnJunction;
+            piece.ContinueMovement(forward, steps);
         }
 
         private IEnumerator RunGroupCombat(List<Piece> attackers, Piece defender,
@@ -396,6 +430,10 @@ namespace ReinosDelEter
             _stepsRemaining = 0;
             ClearHighlights();
             ClearPieceGlows();
+            // Resetea el modo "seguir recto" para que el movimiento normal del
+            // nuevo turno vuelva a ofrecer elección de camino en los cruces.
+            foreach (PlayerData pd in Players)
+                foreach (Piece p in pd.pieces) p.continueStraight = false;
             hudController?.ShowTurn(CurrentPlayer);
             Log($"Turno de {CurrentPlayer.playerName} ({CurrentPlayer.ElementName})");
         }

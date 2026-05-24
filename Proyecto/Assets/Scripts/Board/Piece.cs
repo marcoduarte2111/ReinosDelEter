@@ -27,6 +27,12 @@ namespace ReinosDelEter
         // La tile de donde vino la ficha cuando llegó al cruce
         public Tile _prevTileAtJunction { get; private set; }
 
+        // Tile de la que vino en el último paso (para seguir recto tras un combate)
+        public Tile LastStepFrom { get; private set; }
+
+        // Pasos que quedaban cuando el movimiento se detuvo (ej. al frenar por combate)
+        public int StepsLeftAtStop { get; private set; }
+
         // Visuals
         private Renderer _rend;
         private bool _glowing;
@@ -88,6 +94,10 @@ namespace ReinosDelEter
         // Flag que GameManager activa para detener movimiento inmediatamente
         public bool stopMovement { get; set; } = false;
 
+        // Tras ganar un combate: seguir recto por el anillo sin pedir dirección
+        // en los cruces (solo el centro abre elección de camino).
+        public bool continueStraight { get; set; } = false;
+
         // ── Movement ─────────────────────────────────────────────────────────
 
         private IEnumerator MoveStep(Tile target, int stepsLeft, Tile cameFrom)
@@ -100,10 +110,18 @@ namespace ReinosDelEter
 
             Tile prevTile = currentTile;
             currentTile = target;
+            LastStepFrom = prevTile;
 
             OnArrivedAtTile?.Invoke(currentTile);
 
-            if (stopMovement) { isMoving = false; yield break; }
+            if (stopMovement)
+            {
+                // El aterrizaje consumió un paso; guardamos lo que queda
+                // para poder continuar el avance tras resolver el combate.
+                StepsLeftAtStop = Mathf.Max(0, stepsLeft - 1);
+                isMoving = false;
+                yield break;
+            }
 
             yield return new WaitForSeconds(0.07f);
             stepsLeft--;
@@ -128,6 +146,13 @@ namespace ReinosDelEter
                 OnMovementFinished?.Invoke(currentTile);
             else if (forward.Count == 1 && !forceJunction)
                 StartCoroutine(MoveStep(forward[0], stepsLeft, currentTile));
+            else if (continueStraight && !forceJunction)
+            {
+                // Modo post-combate: no se elige camino fuera del centro.
+                // Se sigue por el anillo (tiles de pathIndex -1).
+                Tile straight = forward.Find(t => t.pathIndex == -1) ?? forward[0];
+                StartCoroutine(MoveStep(straight, stepsLeft, currentTile));
+            }
             else
             {
                 _prevTileAtJunction = prevTile;
@@ -150,6 +175,20 @@ namespace ReinosDelEter
                 result.Add(nb);
             }
             return result;
+        }
+
+        /// <summary>
+        /// Siguiente paso en la MISMA dirección: excluye la tile de la que vino
+        /// y el castillo del elemento propio. Se usa para seguir avanzando tras
+        /// ganar un combate sin ofrecer la opción de retroceder.
+        /// </summary>
+        public Tile GetForwardStep()
+        {
+            var fwd = GetNeighborsExcluding(currentTile, LastStepFrom);
+            fwd.RemoveAll(t => t != null
+                && t.tileType == TileType.Start
+                && t.pathIndex == (int)element);
+            return fwd.Count > 0 ? fwd[0] : null;
         }
 
         private IEnumerator HopTo(Tile target)
