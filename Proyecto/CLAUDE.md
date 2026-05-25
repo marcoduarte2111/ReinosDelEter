@@ -165,13 +165,64 @@ Namespace: `ReinosDelEter` en todo el código.
    - `GameManager.cs`: nuevo `ContinueAfterCombat()`; `HandleCombat` usa los pasos reales
      (`StepsLeftAtStop`); `BeginTurn` resetea `continueStraight` para no afectar el turno normal.
 
+3. **Shaders de elementos portados a URP + terrenos en el tablero.** El proyecto usa
+   **URP**; `WaterShader.shader` y `LavaSahder.shader` (shader `Custom/LavaShader`)
+   estaban escritos para Built-in (`CGPROGRAM`/`UnityCG.cginc`) y salían **magenta**.
+   - Se reescribieron a URP (HLSL, includes URP, `CBUFFER_START(UnityPerMaterial)`).
+     El agua es transparente unlit; la lava es opaca unlit + emisión con passes
+     `ShadowCaster`/`DepthOnly`. `LandShader.shader` ya estaba en URP.
+   - ⚠️ En agua/lava las olas Gerstner normalizan `_Direction*.xy` (NO `.xz`) a propósito:
+     los materiales tienen una dirección `(0,1)` que con `.xz` daría vector cero → NaN.
+   - Grupo **`BoardTerrains`** (objeto raíz, **fuera del BoardGenerator**, por eso
+     sobrevive a `ClearBoard()`): 4 planos-terreno bajo cada brazo (`y = -0.3`,
+     colliders desactivados): `Terrain_Agua` (NO), `Terrain_Fuego` (NE),
+     `Terrain_Tierra` (SO) y `Terrain_Aire_Nubes` (SE). Las olas solo se animan en Play.
+
+4. **Nubes (elemento Aire) = sistema de partículas.** `CloudParticleSystem.cs`
+   (en `Board/`) convierte un `ParticleSystem` en nubes suaves al iniciar: genera una
+   textura circular difusa, fuerza el material a transparente (alpha blend), `startSpeed`
+   y gravedad 0 (no se disparan) y deriva horizontal lenta. Material `Clouds_URP.mat`
+   (`URP/Particles/Unlit`). Parámetros editables en el Inspector.
+
+5. **Condición de victoria / eliminación (por castillos).** Implementada en
+   `GameManager.cs` (+ campo `PlayerData.eliminated`).
+   - Llegar al **castillo de otro elemento** (`Tile.IsCastle` con `pathIndex` distinto al
+     propio) **elimina a su dueño**: sin defensa → al instante (`OnArrived` →
+     `CaptureCastleRoutine`); con defensa → tras vencer a **todas** las fichas
+     defensoras (cola de `HandleCombat`).
+   - `EliminatePlayer`: oculta las fichas (`SetActive(false)`), `NextTurn` le salta los
+     turnos, su terreno queda igual. `GetEnemiesOn` ignora a los eliminados.
+   - `CheckVictory`: cuando queda **1 jugador sin eliminar** → `GameState.GameOver`,
+     se detienen los turnos y se anuncia el ganador en el log (arriba-izquierda).
+   - La vida (HP) sigue siendo un stat de combate pero **no** elimina; la eliminación
+     es solo por toma de castillo.
+
+6. **Marcos de madera + suelo del elemento Aire.**
+   - **Shader de madera procedural** `Custom/WoodShader` (`Assets/WoodShader.shader`, URP
+     lit): vetas alargadas, líneas de grano y juntas de tablones; patrón en espacio-mundo
+     (grano continuo entre piezas). Material `WoodFrame.mat`.
+   - Grupo **`BoardFrame`** (objeto raíz): 4 cubos (`Frame_N/S/E/W`) que enmarcan el
+     perímetro del terreno (≈24×24, en `±12.75`), tipo borde de tablero de mesa. Colliders
+     desactivados.
+   - **Suelo del Aire**: `Aire_Suelo.mat` = `LandShader` con colores pálidos beige/blanco
+     (`_RockLightColor` casi blanco, `_MossStrength` bajo). Plano `Terrain_Aire_Suelo` en el
+     cuadrante SE (mismo escala/altura que los otros terrenos) para que el aire no quede
+     como un hueco bajo las nubes. **Las partículas de nube no se tocaron** (siguen
+     estáticas); solo se corrigió en `CloudParticleSystem.cs` el error en bucle
+     *"Particle Velocity curves must all be in the same mode"* (curvas X/Y/Z ahora comparten
+     modo; deriva en 0).
+
 ---
 
 ## 10. En qué estamos trabajando
 
 - **Corrección de bugs de lógica/gameplay** en la escena Game (sesión en curso).
-- **Pendiente: definir el final del juego / condición de victoria** (¿conquistar los 4
-  castillos?, ¿llegar al centro?, ¿eliminar por HP?). Aún por cuadrar con el usuario.
+- **Condición de victoria — IMPLEMENTADA** (ver §9.5): se gana tomando los castillos
+  enemigos; la partida acaba cuando queda 1 jugador sin eliminar. Pendiente de pulir
+  tras pruebas en Play.
+- **Aspecto visual de los terrenos/nubes/marcos** (ver §9.3-9.4, §9.6): terrenos de los 4
+  elementos, marcos de madera y suelo claro de aire ya colocados. Pendiente solo de ajustes
+  finos de gusto (grosor/color de marcos en `WoodFrame.mat`, tono del suelo de aire).
 - Confirmar detalles del reparto/robo de cartas.
 
 ---

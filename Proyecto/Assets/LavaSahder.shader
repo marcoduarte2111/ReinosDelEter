@@ -2,11 +2,11 @@ Shader "Custom/LavaShader"
 {
     Properties
     {
-        // ── Colores de temperatura (ajusta estos en el Inspector) ────────
-        _DeepColor      ("Deep Lava Color",    Color) = (0.05, 0.01, 0.0,  1)   // negro-marrón (zonas hundidas)
-        _MidColor       ("Mid Lava Color",     Color) = (0.75, 0.08, 0.0,  1)   // rojo intenso (calor activo)
-        _HotColor       ("Hot Lava Color",     Color) = (1.0,  0.72, 0.02, 1)   // amarillo-naranja (crestas)
-        _EmissionColor  ("Emission Color",     Color) = (1.0,  0.38, 0.0,  1)   // naranja brillante
+        // ── Colores de temperatura ───────────────────────────────────────
+        _DeepColor      ("Deep Lava Color",    Color) = (0.05, 0.01, 0.0,  1)
+        _MidColor       ("Mid Lava Color",     Color) = (0.75, 0.08, 0.0,  1)
+        _HotColor       ("Hot Lava Color",     Color) = (1.0,  0.72, 0.02, 1)
+        _EmissionColor  ("Emission Color",     Color) = (1.0,  0.38, 0.0,  1)
 
         // ── Fresnel (borde incandescente) ────────────────────────────────
         _FresnelColor   ("Fresnel Color",      Color) = (1.0,  0.25, 0.0,  1)
@@ -15,7 +15,7 @@ Shader "Custom/LavaShader"
         // ── Emisión ──────────────────────────────────────────────────────
         _EmissionStrength ("Emission Strength", Range(0, 8)) = 3.5
 
-        // ── Ondas Gerstner (movimiento de vértices) ──────────────────────
+        // ── Ondas Gerstner ───────────────────────────────────────────────
         _Amplitude1  ("Amplitude 1",       Range(0, 1))  = 0.18
         _Frequency1  ("Frequency 1",       Range(0, 10)) = 2.5
         _Speed1      ("Speed 1",           Range(0, 10)) = 0.8
@@ -41,46 +41,61 @@ Shader "Custom/LavaShader"
 
     SubShader
     {
-        Tags { "RenderType"="Opaque" "Queue"="Geometry" }
+        Tags
+        {
+            "RenderPipeline" = "UniversalPipeline"
+            "RenderType"     = "Opaque"
+            "Queue"          = "Geometry"
+        }
+        LOD 300
 
+        // ────────────────────────────────────────────────────────────────
+        //  PASS — UniversalForward (unlit + emisión)
+        // ────────────────────────────────────────────────────────────────
         Pass
         {
-            CGPROGRAM
-            #pragma vertex vert
-            #pragma fragment frag
-            #include "UnityCG.cginc"
+            Name "UniversalForward"
+            Tags { "LightMode" = "UniversalForward" }
 
-            struct appdata
+            Cull Back
+            ZWrite On
+            ZTest LEqual
+
+            HLSLPROGRAM
+            #pragma vertex   vert
+            #pragma fragment frag
+            #pragma multi_compile_fog
+
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+
+            CBUFFER_START(UnityPerMaterial)
+                float4 _DeepColor, _MidColor, _HotColor;
+                float4 _EmissionColor, _FresnelColor;
+                float  _FresnelPower, _EmissionStrength;
+                float  _Amplitude1, _Frequency1, _Speed1; float4 _Direction1;
+                float  _Amplitude2, _Frequency2, _Speed2; float4 _Direction2;
+                float  _Amplitude3, _Frequency3, _Speed3; float4 _Direction3;
+                float  _FlowSpeed, _NoiseScale, _LavaLevel;
+            CBUFFER_END
+
+            struct Attributes
             {
-                float4 vertex : POSITION;
-                float3 normal : NORMAL;
-                float2 uv     : TEXCOORD0;
+                float4 positionOS : POSITION;
+                float3 normalOS   : NORMAL;
+                float2 uv         : TEXCOORD0;
             };
 
-            struct v2f
+            struct Varyings
             {
-                float4 clipPos    : SV_POSITION;
-                float3 worldPos   : TEXCOORD0;
-                float3 normal     : TEXCOORD1;
+                float4 positionCS : SV_POSITION;
+                float3 positionWS : TEXCOORD0;
+                float3 normalWS   : TEXCOORD1;
                 float2 uv         : TEXCOORD2;
                 float  waveHeight : TEXCOORD3;
+                float  fogFactor  : TEXCOORD4;
             };
 
-            // ── Variables ────────────────────────────────────────────────
-            float4 _DeepColor, _MidColor, _HotColor;
-            float4 _EmissionColor, _FresnelColor;
-            float  _FresnelPower, _EmissionStrength;
-
-            float  _Amplitude1, _Frequency1, _Speed1; float4 _Direction1;
-            float  _Amplitude2, _Frequency2, _Speed2; float4 _Direction2;
-            float  _Amplitude3, _Frequency3, _Speed3; float4 _Direction3;
-
-            float  _FlowSpeed, _NoiseScale, _LavaLevel;
-
-            // ================================================================
-            //  RUIDO PROCEDURAL (reemplaza la FoamTexture sampler2D)
-            // ================================================================
-
+            // ── Ruido procedural ─────────────────────────────────────────
             float hash(float2 p)
             {
                 p = frac(p * float2(127.1, 311.7));
@@ -93,27 +108,21 @@ Shader "Custom/LavaShader"
                 float2 i = floor(uv);
                 float2 f = frac(uv);
                 float2 u = f * f * (3.0 - 2.0 * f);
-                return lerp(
-                    lerp(hash(i),               hash(i + float2(1,0)), u.x),
-                    lerp(hash(i + float2(0,1)), hash(i + float2(1,1)), u.x),
-                    u.y
-                );
+                return lerp(lerp(hash(i),               hash(i + float2(1,0)), u.x),
+                            lerp(hash(i + float2(0,1)), hash(i + float2(1,1)), u.x), u.y);
             }
 
-            // FBM 4 octavas — reemplaza tex2D(_FoamTexture, foamUV)
             float fbm(float2 uv)
             {
                 float v = 0.0, a = 0.5, f = 1.0;
-                v += a * valueNoise(uv * f);                         a *= 0.5; f *= 2.1;
-                v += a * valueNoise(uv * f + float2(1.7,  9.2));    a *= 0.5; f *= 2.1;
-                v += a * valueNoise(uv * f + float2(8.3,  2.8));    a *= 0.5; f *= 2.1;
-                v += a * valueNoise(uv * f + float2(4.1,  6.5));
+                v += a * valueNoise(uv * f);                      a *= 0.5; f *= 2.1;
+                v += a * valueNoise(uv * f + float2(1.7, 9.2));   a *= 0.5; f *= 2.1;
+                v += a * valueNoise(uv * f + float2(8.3, 2.8));   a *= 0.5; f *= 2.1;
+                v += a * valueNoise(uv * f + float2(4.1, 6.5));
                 return v;
             }
 
-            // ================================================================
-            //  GERSTNER WAVE — misma función que WaterShader
-            // ================================================================
+            // ── Gerstner Wave ────────────────────────────────────────────
             float3 GerstnerWave(float3 pos, float amplitude, float frequency,
                                 float speed, float2 direction)
             {
@@ -125,110 +134,185 @@ Shader "Custom/LavaShader"
                 return offset;
             }
 
-            // ================================================================
-            //  VERTEX SHADER
-            // ================================================================
-            v2f vert(appdata v)
+            Varyings vert(Attributes IN)
             {
-                v2f o;
+                Varyings OUT = (Varyings)0;
 
-                float3 worldPos    = mul(unity_ObjectToWorld, v.vertex).xyz;
-                float3 worldNormal = normalize(mul((float3x3)unity_ObjectToWorld, v.normal));
+                float3 posWS = TransformObjectToWorld(IN.positionOS.xyz);
+                float3 norWS = TransformObjectToWorldNormal(IN.normalOS);
 
-                float2 dir1 = normalize(_Direction1.xy);
-                float2 dir2 = normalize(_Direction2.xy);
-                float2 dir3 = normalize(_Direction3.xy);
+                float2 d1 = normalize(_Direction1.xy);
+                float2 d2 = normalize(_Direction2.xy);
+                float2 d3 = normalize(_Direction3.xy);
 
-                // Suma 3 ondas Gerstner — misma lógica que WaterShader
-                float3 totalOffset = GerstnerWave(worldPos, _Amplitude1, _Frequency1, _Speed1, dir1)
-                                   + GerstnerWave(worldPos, _Amplitude2, _Frequency2, _Speed2, dir2)
-                                   + GerstnerWave(worldPos, _Amplitude3, _Frequency3, _Speed3, dir3);
+                posWS += GerstnerWave(posWS, _Amplitude1, _Frequency1, _Speed1, d1);
+                posWS += GerstnerWave(posWS, _Amplitude2, _Frequency2, _Speed2, d2);
+                posWS += GerstnerWave(posWS, _Amplitude3, _Frequency3, _Speed3, d3);
 
-                worldPos += totalOffset;
-
-                // waveHeight: altura sobre el nivel base → controla color y emisión
-                // (mismo rol que en WaterShader, donde controlaba foam)
-                o.waveHeight = worldPos.y - _LavaLevel;
-
-                o.clipPos  = mul(UNITY_MATRIX_VP, float4(worldPos, 1.0));
-                o.worldPos = worldPos;
-                o.normal   = worldNormal;
-                o.uv       = v.uv;
-                return o;
+                OUT.positionWS = posWS;
+                OUT.positionCS = TransformWorldToHClip(posWS);
+                OUT.normalWS   = norWS;
+                OUT.uv         = IN.uv;
+                OUT.waveHeight = posWS.y - _LavaLevel;
+                OUT.fogFactor  = ComputeFogFactor(OUT.positionCS.z);
+                return OUT;
             }
 
-            // ================================================================
-            //  FRAGMENT SHADER
-            // ================================================================
-            fixed4 frag(v2f i) : SV_Target
+            half4 frag(Varyings IN) : SV_Target
             {
-                float3 N = normalize(i.normal);
-                float3 V = normalize(_WorldSpaceCameraPos - i.worldPos);
+                float3 N = normalize(IN.normalWS);
+                float3 V = normalize(GetCameraPositionWS() - IN.positionWS);
                 float  t = _Time.y;
 
-                // ── Textura procedural animada ────────────────────────────
-                // Reemplaza tex2D(_FoamTexture, foamUV) del WaterShader
-                // Capa A: flujo principal
-                float2 uvA    = i.uv * _NoiseScale + float2(t * _FlowSpeed * 0.5,
-                                                             t * _FlowSpeed * 0.3);
+                // Textura procedural animada
+                float2 uvA    = IN.uv * _NoiseScale + float2(t * _FlowSpeed * 0.5, t * _FlowSpeed * 0.3);
                 float  noiseA = fbm(uvA);
-
-                // Capa B: flujo cruzado → turbulencia (análogo al slopeFactor del agua)
-                float2 uvB    = i.uv * _NoiseScale * 0.8
-                              + float2(-t * _FlowSpeed * 0.4,
-                                        t * _FlowSpeed * 0.6);
+                float2 uvB    = IN.uv * _NoiseScale * 0.8 + float2(-t * _FlowSpeed * 0.4, t * _FlowSpeed * 0.6);
                 float  noiseB = fbm(uvB + noiseA * 0.35);
+                float  lavaPattern = noiseA * 0.4 + noiseB * 0.6;
 
-                float lavaPattern = noiseA * 0.4 + noiseB * 0.6;
-
-                // ── Valor de calor: altura + patrón UV ────────────────────
-                // Análogo a shallowFactor + foamFactorHeight del WaterShader
-                float heightFactor = saturate(i.waveHeight * 1.8 + 0.3);
+                float heightFactor = saturate(IN.waveHeight * 1.8 + 0.3);
                 float heatValue    = saturate(heightFactor * 0.55 + lavaPattern * 0.45);
 
-                // ── Gradiente de color no lineal ──────────────────────────
-                // deep → mid → hot con smoothstep (zonas frías anchas, crestas estrechas)
                 float t1 = smoothstep(0.0,  0.45, heatValue);
                 float t2 = smoothstep(0.45, 1.0,  heatValue);
-
                 float3 lavaColor = lerp(_DeepColor.rgb, _MidColor.rgb, t1);
-                       lavaColor = lerp(lavaColor,      _HotColor.rgb,  t2);
+                       lavaColor = lerp(lavaColor,      _HotColor.rgb, t2);
 
-                // ── Fresnel — misma lógica que WaterShader ────────────────
                 float fresnelFactor = pow(1.0 - saturate(dot(N, V)), _FresnelPower);
                 lavaColor = lerp(lavaColor, _FresnelColor.rgb, fresnelFactor * 0.45);
 
-                // ── Emisión en crestas ────────────────────────────────────
-                // Reemplaza foamFactor del WaterShader:
-                // en agua las crestas tienen espuma blanca → aquí tienen brillo incandescente
                 float  emissionMask = smoothstep(0.55, 1.0, heatValue);
                 float3 emission     = _EmissionColor.rgb * _EmissionStrength * emissionMask;
                        emission    += _FresnelColor.rgb  * fresnelFactor * (_EmissionStrength * 0.35);
 
                 float3 finalColor = lavaColor + emission;
 
-                return fixed4(finalColor, 1.0);   // opaco (sin Blend ni ZWrite Off)
+                finalColor = MixFog(finalColor, IN.fogFactor);
+                return half4(finalColor, 1.0);
             }
-            ENDCG
+            ENDHLSL
+        }
+
+        // ────────────────────────────────────────────────────────────────
+        //  PASS — ShadowCaster URP
+        // ────────────────────────────────────────────────────────────────
+        Pass
+        {
+            Name "ShadowCaster"
+            Tags { "LightMode" = "ShadowCaster" }
+
+            ZWrite On
+            ZTest LEqual
+            ColorMask 0
+            Cull Back
+
+            HLSLPROGRAM
+            #pragma vertex   vert_shadow
+            #pragma fragment frag_shadow
+            #pragma multi_compile_shadowcaster
+
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Shadows.hlsl"
+
+            CBUFFER_START(UnityPerMaterial)
+                float4 _DeepColor, _MidColor, _HotColor;
+                float4 _EmissionColor, _FresnelColor;
+                float  _FresnelPower, _EmissionStrength;
+                float  _Amplitude1, _Frequency1, _Speed1; float4 _Direction1;
+                float  _Amplitude2, _Frequency2, _Speed2; float4 _Direction2;
+                float  _Amplitude3, _Frequency3, _Speed3; float4 _Direction3;
+                float  _FlowSpeed, _NoiseScale, _LavaLevel;
+            CBUFFER_END
+
+            float3 GerstnerWave(float3 pos, float a, float fr, float sp, float2 dir)
+            {
+                float th = dot(dir, pos.xz) * fr + _Time.y * sp;
+                return float3(a*cos(th)*dir.x, a*sin(th), a*cos(th)*dir.y);
+            }
+
+            struct Attributes { float4 positionOS:POSITION; float3 normalOS:NORMAL; };
+            struct Varyings   { float4 positionCS:SV_POSITION; };
+
+            Varyings vert_shadow(Attributes IN)
+            {
+                Varyings OUT;
+                float3 posWS = TransformObjectToWorld(IN.positionOS.xyz);
+                float3 norWS = TransformObjectToWorldNormal(IN.normalOS);
+
+                posWS += GerstnerWave(posWS, _Amplitude1, _Frequency1, _Speed1, normalize(_Direction1.xy));
+                posWS += GerstnerWave(posWS, _Amplitude2, _Frequency2, _Speed2, normalize(_Direction2.xy));
+                posWS += GerstnerWave(posWS, _Amplitude3, _Frequency3, _Speed3, normalize(_Direction3.xy));
+
+                float3 lightDir = normalize(_MainLightPosition.xyz);
+                float4 posCS    = TransformWorldToHClip(ApplyShadowBias(posWS, norWS, lightDir));
+
+                #if UNITY_REVERSED_Z
+                    posCS.z = min(posCS.z, posCS.w * UNITY_NEAR_CLIP_VALUE);
+                #else
+                    posCS.z = max(posCS.z, posCS.w * UNITY_NEAR_CLIP_VALUE);
+                #endif
+
+                OUT.positionCS = posCS;
+                return OUT;
+            }
+
+            half4 frag_shadow(Varyings IN) : SV_Target { return 0; }
+            ENDHLSL
+        }
+
+        // ────────────────────────────────────────────────────────────────
+        //  PASS — DepthOnly URP
+        // ────────────────────────────────────────────────────────────────
+        Pass
+        {
+            Name "DepthOnly"
+            Tags { "LightMode" = "DepthOnly" }
+
+            ZWrite On
+            ColorMask R
+            Cull Back
+
+            HLSLPROGRAM
+            #pragma vertex   vert_depth
+            #pragma fragment frag_depth
+
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+
+            CBUFFER_START(UnityPerMaterial)
+                float4 _DeepColor, _MidColor, _HotColor;
+                float4 _EmissionColor, _FresnelColor;
+                float  _FresnelPower, _EmissionStrength;
+                float  _Amplitude1, _Frequency1, _Speed1; float4 _Direction1;
+                float  _Amplitude2, _Frequency2, _Speed2; float4 _Direction2;
+                float  _Amplitude3, _Frequency3, _Speed3; float4 _Direction3;
+                float  _FlowSpeed, _NoiseScale, _LavaLevel;
+            CBUFFER_END
+
+            float3 GerstnerWave(float3 pos, float a, float fr, float sp, float2 dir)
+            {
+                float th = dot(dir, pos.xz) * fr + _Time.y * sp;
+                return float3(a*cos(th)*dir.x, a*sin(th), a*cos(th)*dir.y);
+            }
+
+            struct Attributes { float4 positionOS:POSITION; };
+            struct Varyings   { float4 positionCS:SV_POSITION; };
+
+            Varyings vert_depth(Attributes IN)
+            {
+                Varyings OUT;
+                float3 posWS = TransformObjectToWorld(IN.positionOS.xyz);
+                posWS += GerstnerWave(posWS, _Amplitude1, _Frequency1, _Speed1, normalize(_Direction1.xy));
+                posWS += GerstnerWave(posWS, _Amplitude2, _Frequency2, _Speed2, normalize(_Direction2.xy));
+                posWS += GerstnerWave(posWS, _Amplitude3, _Frequency3, _Speed3, normalize(_Direction3.xy));
+                OUT.positionCS = TransformWorldToHClip(posWS);
+                return OUT;
+            }
+
+            half4 frag_depth(Varyings IN) : SV_Target { return 0; }
+            ENDHLSL
         }
     }
-    FallBack "Diffuse"
-}
 
-// ============================================================
-//  INSTRUCCIONES
-// ============================================================
-//
-//  1. Reemplaza el contenido de Assets/LavaShader/LavaShader.shader
-//     con este archivo completo.
-//
-//  2. COLORES RECOMENDADOS EN EL INSPECTOR:
-//     Deep Lava Color   → #0D0200   (negro con tinte rojo)
-//     Mid Lava Color    → #BF1400   (rojo intenso)
-//     Hot Lava Color    →  #FFB800   (amarillo-naranja)
-//     Emission Color    → #FF6000   (naranja brillante)
-//     Fresnel Color     → #FF3300   (rojo en bordes)
-//
-//  3. El plano necesita mínimo 20x20 subdivisiones para que
-//     las ondas Gerstner sean visibles en los vértices.
-// ============================================================
+    FallBack "Universal Render Pipeline/Lit"
+}

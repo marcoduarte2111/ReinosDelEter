@@ -197,6 +197,17 @@ namespace ReinosDelEter
                 _activePiece.OnMovementFinished = null;
                 _activePiece.OnReachedJunction = null;
                 StartCoroutine(HandleCombat(_activePiece, enemies));
+                return;
+            }
+
+            // Castillo enemigo SIN defensa → captura automática y eliminación.
+            if (IsEnemyHomeCastle(tile, _activePiece))
+            {
+                _activePiece.stopMovement = true;
+                _activePiece.OnArrivedAtTile = null;
+                _activePiece.OnMovementFinished = null;
+                _activePiece.OnReachedJunction = null;
+                StartCoroutine(CaptureCastleRoutine(_activePiece, tile));
             }
         }
 
@@ -257,6 +268,17 @@ namespace ReinosDelEter
                     if (home != null) attacker.PlaceOnTile(home);
                     Log($"{Players[attacker.playerIndex].playerName} pierde y vuelve.");
                 }
+            }
+
+            // Si tras vencer a todos los defensores la ficha quedó sobre el
+            // castillo de un enemigo → lo captura y ese jugador queda eliminado.
+            if (!attackerLost && IsEnemyHomeCastle(attacker.currentTile, attacker))
+            {
+                CaptureCastleAndEliminate(attacker, attacker.currentTile);
+                _isProcessing = false;
+                _activePiece = null;
+                if (State != GameState.GameOver) NextTurn();
+                yield break;
             }
 
             if (!attackerLost && stepsAfter > 0)
@@ -366,19 +388,10 @@ namespace ReinosDelEter
         {
             Tile tile = piece.currentTile;
 
-            if (tile != null && tile.IsCastle)
-            {
-                if (tile.ownedByPlayer == piece.playerIndex)
-                    Log($"{CurrentPlayer.playerName} en su castillo.");
-                else if (tile.ownedByPlayer == -1)
-                    ConquerCastle(piece, tile);
-                else
-                {
-                    tile.Free();
-                    ConquerCastle(piece, tile);
-                    Log($"{CurrentPlayer.playerName} arrebató un castillo!");
-                }
-            }
+            // Llegar a un castillo enemigo ya se resuelve en OnArrived/HandleCombat
+            // (captura + eliminación). Aquí solo queda el mensaje del castillo propio.
+            if (tile != null && tile.IsCastle && tile.pathIndex == (int)piece.element)
+                Log($"{CurrentPlayer.playerName} está en su castillo.");
 
             CurrentPlayer.RestoreEnergy();
             yield return new WaitForSeconds(0.3f);
@@ -387,31 +400,86 @@ namespace ReinosDelEter
             NextTurn();
         }
 
-        private void ConquerCastle(Piece piece, Tile castle)
+        // ── Castillos y eliminación ──────────────────────────────────────────
+
+        /// <summary>True si la tile es el castillo de OTRO elemento (no el propio).</summary>
+        private bool IsEnemyHomeCastle(Tile tile, Piece piece)
         {
-            PlayerData pd = Players[piece.playerIndex];
-            int prevOwner = castle.ownedByPlayer;
-            castle.Conquer(piece.playerIndex, pd.ElementColor);
-            pd.score += 25;
-            Log($"[Castillo] {pd.playerName} conquisto un castillo! +25 pts");
-            hudController?.UpdatePlayerStats(pd);
-            if (prevOwner >= 0 && prevOwner != piece.playerIndex)
-                CheckElimination(prevOwner);
+            return tile != null && tile.IsCastle
+                && tile.pathIndex >= 0 && tile.pathIndex < 4
+                && tile.pathIndex != (int)piece.element;
         }
 
-        private void CheckElimination(int playerIndex)
+        private PlayerData GetPlayerByElement(ElementType element)
         {
-            int ownedCastles = 0;
-            Tile home = boardGenerator.GetStartTileByElement(Players[playerIndex].element);
-            if (home != null && (home.ownedByPlayer == playerIndex || home.ownedByPlayer == -1))
-                ownedCastles++;
+            foreach (PlayerData pd in Players)
+                if (pd.element == element) return pd;
+            return null;
+        }
 
-            if (ownedCastles == 0)
+        /// <summary>Captura de un castillo sin defensa: espera a que la ficha aterrice.</summary>
+        private IEnumerator CaptureCastleRoutine(Piece piece, Tile castle)
+        {
+            yield return new WaitUntil(() => !piece.isMoving);
+            CaptureCastleAndEliminate(piece, castle);
+            _isProcessing = false;
+            _activePiece = null;
+            if (State != GameState.GameOver) NextTurn();
+        }
+
+        /// <summary>Tiñe el castillo del color del atacante y elimina a su dueño.</summary>
+        private void CaptureCastleAndEliminate(Piece piece, Tile castle)
+        {
+            PlayerData attackerPD = Players[piece.playerIndex];
+
+            castle.Conquer(piece.playerIndex, attackerPD.ElementColor);
+            attackerPD.score += 25;
+            hudController?.UpdatePlayerStats(attackerPD);
+
+            PlayerData homePD = GetPlayerByElement((ElementType)castle.pathIndex);
+            if (homePD == null || homePD.index == piece.playerIndex || homePD.eliminated) return;
+
+            Log($"{attackerPD.playerName} tomó el castillo de {homePD.playerName} ({homePD.ElementName})!");
+            EliminatePlayer(homePD.index);
+        }
+
+        /// <summary>Elimina a un jugador: oculta sus fichas y revisa la victoria.</summary>
+        private void EliminatePlayer(int playerIndex)
+        {
+            PlayerData pd = Players[playerIndex];
+            if (pd.eliminated) return;
+
+            pd.eliminated = true;
+            Log($"[Eliminado] {pd.playerName} ({pd.ElementName}) queda fuera del juego.");
+
+            foreach (Piece p in pd.pieces)
+                if (p != null) p.gameObject.SetActive(false);
+
+            hudController?.UpdatePlayerStats(pd);
+            CheckVictory();
+        }
+
+        /// <summary>La partida acaba cuando solo queda 1 jugador sin eliminar.</summary>
+        private bool CheckVictory()
+        {
+            var alive = Players.FindAll(p => !p.eliminated);
+            if (alive.Count > 1) return false;
+
+            State = GameState.GameOver;
+            ClearHighlights();
+            ClearPieceGlows();
+
+            if (alive.Count == 1)
             {
-                Log($"[Eliminado] {Players[playerIndex].playerName} fue eliminado!");
-                foreach (Piece p in Players[playerIndex].pieces)
-                    p.gameObject.SetActive(false);
+                Log($"[VICTORIA] ¡{alive[0].playerName} ({alive[0].ElementName}) gana la partida!");
+                hudController?.SetMessage($"¡{alive[0].playerName} gana la partida!");
             }
+            else
+            {
+                Log("[FIN] La partida ha terminado.");
+                hudController?.SetMessage("Fin del juego");
+            }
+            return true;
         }
 
         // ── Turno ────────────────────────────────────────────────────────────
@@ -485,11 +553,22 @@ namespace ReinosDelEter
 
         private void NextTurn()
         {
+            if (State == GameState.GameOver) return;
+
             ClearPieceGlows();
             ClearHighlights();
             _activePiece = null;
             _stepsRemaining = 0;
-            TurnIndex = (TurnIndex + 1) % numberOfPlayers;
+
+            // Avanza al siguiente jugador que siga en pie (salta eliminados).
+            int guard = 0;
+            do
+            {
+                TurnIndex = (TurnIndex + 1) % numberOfPlayers;
+                guard++;
+            }
+            while (Players[TurnIndex].eliminated && guard <= numberOfPlayers);
+
             BeginTurn();
         }
 
@@ -590,8 +669,9 @@ namespace ReinosDelEter
             foreach (PlayerData pd in Players)
             {
                 if (pd.index == myPlayer) continue;
+                if (pd.eliminated) continue;
                 foreach (Piece p in pd.pieces)
-                    if (p.currentTile == tile) result.Add(p);
+                    if (p != null && p.gameObject.activeSelf && p.currentTile == tile) result.Add(p);
             }
             return result;
         }

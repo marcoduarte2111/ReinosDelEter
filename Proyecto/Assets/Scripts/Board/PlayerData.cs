@@ -18,6 +18,10 @@ namespace ReinosDelEter
         public int maxEnergy = 3;
         public int score = 0;
 
+        // Queda en true cuando le toman su castillo: sus fichas desaparecen y
+        // se le saltan los turnos. La partida acaba cuando solo queda 1 sin eliminar.
+        public bool eliminated = false;
+
         public string ElementName => element switch
         {
             ElementType.Water => "Agua",
